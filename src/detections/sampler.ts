@@ -1,7 +1,6 @@
 import setupChecks, { DEFAULTS } from "./setupChecks";
 import { SubjectStartChecks } from "../warnings/2SubjectStart";
 import { MultiPersonChecks } from "../warnings/3MultiPerson";
-import { LowLightChecks } from "../warnings/4LowLight";
 import { NonVisibleMarks } from "../warnings/1NonVisibleMarkers";
 
 type BBox = { x: number; y: number; width: number; height: number };
@@ -23,36 +22,6 @@ export default class Sampler {
     this.opts = { ...DEFAULTS, ...opts };
   }
 
-  sampleObject(results: any, videoEl: HTMLVideoElement) {
-    try {
-      const hidden = this.hiddenRef && this.hiddenRef.current;
-      if (!hidden) return;
-      const off = hidden.getContext('2d', { willReadFrequently: true });
-      const inputW = 640;
-      const inputH = Math.round(inputW * (videoEl.clientHeight / videoEl.clientWidth));
-      hidden.width = inputW;
-      hidden.height = inputH;
-      off.drawImage(videoEl, 0, 0, inputW, inputH);
-      const imageData = off.getImageData(0, 0, inputW, inputH);
-
-      const sampleBboxes: BBox[] = [];
-      if (results && results.detections) {
-        for (const detection of results.detections) {
-          const category = detection.categories && detection.categories[0];
-          const catName = category && String(category.categoryName || '').toLowerCase();
-          if (catName.includes('person') || catName.includes('human')) {
-            // assume boundingBox in pixel coords relative to video canvas
-            sampleBboxes.push({ x: detection.boundingBox.originX, y: detection.boundingBox.originY, width: detection.boundingBox.width, height: detection.boundingBox.height });
-          }
-        }
-      }
-
-      this._pushSample({ bboxes: sampleBboxes, imageData, timestamp: performance.now(), videoWidth: videoEl.clientWidth, videoHeight: videoEl.clientHeight });
-
-    } catch (e) {
-      console.warn('Sampler.sampleObject error', e);
-    }
-  }
 
   sampleAruco(imageData: ImageData, videoEl: HTMLVideoElement, markers: any[] | null = null, displayCanvas: HTMLCanvasElement | null = null) {
     try {
@@ -94,23 +63,6 @@ export default class Sampler {
       this.frames = []
 
     }
-    //   const canvas = this.hiddenRef && this.hiddenRef.current ? this.hiddenRef.current : null;
 
-    //   // Run checks depending on enabledWarnings (map model types to checks)
-    //   // If enabledWarnings includes 'object' or 'pose' we'll run start/multi-person/lighting checks
-    //   if (this.enabledWarnings.includes('object') || this.enabledWarnings.includes('pose')) {
-    //     try { SubjectStartChecks(canvas, this.frames, this.notif, sample.videoWidth, sample.videoHeight); } catch (e) { console.warn('SubjectStartChecks failed', e); }
-    //     try { MultiPersonChecks(canvas, this.frames, this.notif, sample.videoWidth, sample.videoHeight); } catch (e) { console.warn('MultiPersonChecks failed', e); }
-    //     try { LowLightChecks(canvas, this.frames, this.notif, sample.videoWidth, sample.videoHeight); } catch (e) { console.warn('LowLightChecks failed', e); }
-    //   }
-
-    //   // If enabledWarnings includes 'aruco' run marker visibility and lighting
-    //   if (this.enabledWarnings.includes('aruco')) {
-    //     try { LowLightChecks(canvas, this.frames, this.notif, sample.videoWidth, sample.videoHeight); } catch (e) { console.warn('LowLightChecks failed', e); }
-    //   }
-
-    //   // optionally clear frames to avoid repeated notifications; keep last requiredFrames
-    //   this.frames = this.frames.slice(-requiredFrames);
-    // }
   }
 }

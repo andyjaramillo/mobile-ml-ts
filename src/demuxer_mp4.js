@@ -1,4 +1,5 @@
-importScripts("./mp4box.all.min.js");
+// importScripts("./mp4box.all.min.js");
+import {MP4Box,DataStream} from "./mp4box.all.min"; 
 
 // Wraps an MP4Box File as a WritableStream underlying sink.
 class MP4FileSink {
@@ -36,7 +37,7 @@ class MP4FileSink {
 
 // Demuxes the first video track of an MP4 file using MP4Box, calling
 // `onConfig()` and `onChunk()` with appropriate WebCodecs objects.
-class MP4Demuxer {
+ export class MP4Demuxer {
   #onConfig = null;
   #onChunk = null;
   #setStatus = null;

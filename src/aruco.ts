@@ -229,6 +229,27 @@ export class AR_Detector {
   }
 
 
+  findCentroidFromMarkers(markers: Marker[]): Corner | null {
+    if (!markers?.length) return null;
+
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+
+    for (const marker of markers) {
+      const corners = marker.corners;
+      if (!corners || corners.length < 4) continue;
+
+      sumX += (corners[1].x + corners[3].x) / 2;
+      sumY += (corners[1].y + corners[3].y) / 2;
+      count++;
+    }
+
+    if (count === 0) return null;
+    return { x: sumX / count, y: sumY / count };
+  }
+
+
 detectImage(arg1: any, arg2?: any, arg3?: any, arg4?: any, inputW = 256, inputH = 256) {
     // Support two calling conventions:
     // 1) detectImage(imageData: ImageData) -> returns markers array

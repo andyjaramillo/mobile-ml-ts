@@ -1,8 +1,17 @@
-import setupChecks from "../detections/setupChecks";
 
-function LowLightChecks(canvas: HTMLCanvasElement | null, frames: any[], notif: { warning: (msg: string, tag?: string) => void }, frameWidth: number, frameHeight: number) {
+
+
+function analyzeLightingAcrossFrames(imageData: ImageData){
+  
+}
+
+
+function LowLightChecks(canvas: HTMLCanvasElement | null, frame: any, notif: { warning: (msg: string, tag?: string) => void }, frameWidth: number, frameHeight: number) {
   try {
-    const res = setupChecks.analyzeLightingAcrossFrames(frames);
+    const ctx = canvas?.getContext("2d");
+    ctx?.drawImage(frame, 0, 0 ,frameWidth, frameHeight)
+    const imageData = ctx?.getImageData(0, 0 ,frameWidth, frameHeight)
+    const res = analyzeLightingAcrossFrames(imageData);
 
     const threshold = 0.05; // warn if >5% of sampled frames failing
     if (res.pct_frames_failing > threshold) {

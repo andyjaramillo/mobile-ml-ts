@@ -5,20 +5,20 @@ import { AR_Detector } from "./aruco";
 import {drawArucoMarkerIds, drawArucoMarkers, drawBoundingBoxes, drawPose} from "./warnings/drawing_utils";
 import { useNotify } from "./warnings/Notification";
 import Sampler from "./detections/sampler"
+import useModel from "./model/useModel";
 
 
 
 const App = () => {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
-  const drawingUtilsRef = useRef<DrawingUtils | null>(null);
+  
   const lastTimeRef = useRef(0);
   const fpsRef = useRef(0);
-  const [modelType, setModelType] = useState("pose"); // "pose" or "object"
+  
   const [facingMode, setFacingMode] = useState("user"); // "user" or "environment"
 
-  const [modelCaller, setModelCaller] = useState<PoseLandmarker | ObjectDetector | AR_Detector | null>(null);
-  const hiddenRef = useRef(null);
+  
   const [videoDimensions, setVideoDimensions] = useState({
     width: 1920,
     height: 1080,
@@ -29,78 +29,7 @@ const App = () => {
   // sampler for setup checks (collects frames and runs analysis)
   const samplerRef = useRef(null);
 
-  useEffect(() => {
-    let disposed = false;
-    let activePoseLandmarker: PoseLandmarker | null = null;
-    let activeObjectDetector: ObjectDetector | null = null;
 
-    drawingUtilsRef.current?.close();
-    drawingUtilsRef.current = null;
-    setModelCaller(null);
-
-    if (modelType === "pose") {
-      const setupLandmarker = async () => {
-        if (!hiddenRef.current) return;
-
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        );
-        const poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          canvas: hiddenRef.current,
-          numPoses: 1,
-        });
-        if (disposed) {
-          poseLandmarker.close();
-          return;
-        }
-        activePoseLandmarker = poseLandmarker;
-        setModelCaller(poseLandmarker);
-      };
-      setupLandmarker();
-    } else if (modelType === "object") {
-
-      const setupDetector = async () => {
-        if (!hiddenRef.current) return;
-
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        );
-
-        const objectDetector = await ObjectDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          canvas: hiddenRef.current,
-          scoreThreshold: 0.5,
-        });
-        if (disposed) {
-          objectDetector.close();
-          return;
-        }
-        activeObjectDetector = objectDetector;
-        setModelCaller(objectDetector);
-      };
-      setupDetector()
-    } else if (modelType === "aruco") {
-      const arucoDetetor = new AR_Detector();
-      setModelCaller(arucoDetetor);
-    }
-
-    return () => {
-      disposed = true;
-      activePoseLandmarker?.close();
-      activeObjectDetector?.close();
-      drawingUtilsRef.current?.close();
-      drawingUtilsRef.current = null;
-    };
-  }, [modelType]);
 
 
   function calculateVideoDimensions(videoElement) {
@@ -254,18 +183,15 @@ const App = () => {
         const poseLandmarker = modelCaller as PoseLandmarker;
         const results = poseLandmarker.detectForVideo(video, startTimeMs);
 
-        drawPose(ctx,canvas,hiddenRef, drawingUtilsRef, results)
+     //   drawPose(ctx,canvas,hiddenRef, drawingUtilsRef, results)
         results.close?.();
 
       } else if (modelType === "object") {
         const objectDetector = modelCaller as ObjectDetector;
         const results = objectDetector.detectForVideo(video, startTimeMs);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        
-       
         const detections = results.detections.filter((detect_) => detect_.categories[0].categoryName  == "person")
-        drawBoundingBoxes(canvas, video, ctx, detections, facingMode, hiddenRef, drawingUtilsRef)
+     //   drawBoundingBoxes(canvas, video, ctx, detections, facingMode, hiddenRef, drawingUtilsRef)
  
    
       } else if (modelType === "aruco") {
@@ -290,7 +216,7 @@ const App = () => {
            markers.push(unfiltered_markers[i])
           }
         }
-
+        
         // sample for lighting and multi-person checks
         try {
         if (!samplerRef.current) samplerRef.current = new Sampler(hiddenRef, () => fpsRef.current, notif, ['aruco']);
@@ -300,7 +226,7 @@ const App = () => {
         }
       
        //drawArucoMarkers(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH);
-      // drawArucoMarkerIds(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH)
+       drawArucoMarkerIds(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH)
       }
 
 
@@ -321,26 +247,9 @@ const App = () => {
   };
 
 
-  
+  const {modelType, setModelType, hiddenRef, modelCaller, drawingUtilsRef} = useModel(detect, "pose");
 
-  useEffect(() => {
-    if (modelCaller) {
-      const animationId = requestAnimationFrame(detect);
-      return () => cancelAnimationFrame(animationId);
-    }
-  }, [modelCaller]);
 
-  // initialize OpenCV (async)
-  useEffect(() => {
-    (async () => {
-      try {
-       // await ensureOpenCV();
-        console.log('OpenCV initialized (if available)');
-      } catch (e) {
-        console.warn('OpenCV initialization failed', e);
-      }
-    })();
-  }, []);
 
   return (
 
