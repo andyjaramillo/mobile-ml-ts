@@ -6,8 +6,23 @@ import {drawArucoMarkerIds} from "./warnings/drawing_utils";
 import { useNotify } from "./warnings/Notification";
 import Sampler from "./detections/sampler"
 import useModel from "./model/useModel";
+import { DEFAULTS as CAPTURE_QUALITY_DEFAULTS, MARKER_BOARD } from "./CaptureQuality/captureQualityConfig";
+import {
+  createMarkerBoardFrameWindow,
+  defaultMarkerBoardCheckConfig,
+  evaluateMarkerBoardFrame,
+  evaluateMarkerBoardWindowAggregate,
+  pushMarkerBoardFrame,
+  resetMarkerBoardFrameWindow,
+} from "./CaptureQuality/markerBoardCheck";
+import type { MarkerBoardWindowAggregate } from "./CaptureQuality/markerBoardCheck";
+import type { CaptureQualityFrameSample } from "./CaptureQuality/types";
+import MarkerBoardHud from "./CaptureQualityHud/MarkerBoardHud";
+import RecorderPanel from "./CaptureQualityHud/RecorderPanel";
+import { createCaptureRecorderState, recordCaptureFrame } from "./CaptureQualityHud/captureRecorder";
 
-
+const EXPECTED_MARKER_IDS = new Set(MARKER_BOARD.expectedMarkerIds);
+const HUD_UPDATE_EVERY_N_FRAMES = 3; // throttle React state updates off the ~25-30fps detect loop
 
 const RealTimeProcessor = () => {
   const webcamRef = useRef(null);
@@ -28,6 +43,17 @@ const RealTimeProcessor = () => {
   const notif = useNotify();
   // sampler for setup checks (collects frames and runs analysis)
   const samplerRef = useRef(null);
+
+  // marker-board capture-quality check: caller-owned bounded window + throttled HUD state
+  const markerBoardConfigRef = useRef(defaultMarkerBoardCheckConfig(CAPTURE_QUALITY_DEFAULTS));
+  const markerBoardWindowRef = useRef(createMarkerBoardFrameWindow(CAPTURE_QUALITY_DEFAULTS.sampling.liveWindowFrameCount));
+  const markerBoardTickRef = useRef(0);
+  const [markerBoardAggregate, setMarkerBoardAggregate] = useState<MarkerBoardWindowAggregate | null>(null);
+
+  // Capture-quality data recorder: mutated every aruco tick (recordCaptureFrame is a
+  // no-op unless recording), independent of the HUD's throttled aggregate updates -
+  // decimation for the size cap happens inside the recorder itself, not here.
+  const captureRecorderStateRef = useRef(createCaptureRecorderState());
 
 
 
@@ -205,20 +231,42 @@ const RealTimeProcessor = () => {
         const unfiltered_markers = await arDetector.detectImage(imageData);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const markers = []
-        for(let i =0; i < unfiltered_markers.length; i++){
-           if (unfiltered_markers[i].id >= 0 && unfiltered_markers[i].id <= 8) {
-           markers.push(unfiltered_markers[i])
-          }
-        }
-        
+        const markers = unfiltered_markers.filter((m) => EXPECTED_MARKER_IDS.has(m.id));
+
         // sample for lighting and multi-person checks
         try {
         if (!samplerRef.current) samplerRef.current = new Sampler(hiddenRef, () => fpsRef.current, notif, ['aruco']);
-        samplerRef.current?.sampleAruco?.(imageData, video, markers, canvas);
+        samplerRef.current?.sampleAruco?.(imageData, video, markers);
         } catch (e) {
           console.warn('sampler (aruco) error', e);
         }
+
+        // Capture-quality marker-board check. frameWidth/frameHeight here MUST stay in
+        // the same coordinate space as marker.corners (the detector's own input
+        // resolution) - mixing in the video element's CSS display size here is the
+        // exact bug markerBoardCheck.ts was written to fix.
+        const captureFrame: CaptureQualityFrameSample = {
+          imageData: null,
+          timestampMs: startTimeMs,
+          frameWidth: hiddeninputW,
+          frameHeight: hiddeninputH,
+          people: null,
+          markers,
+        };
+        pushMarkerBoardFrame(markerBoardWindowRef.current, captureFrame);
+        markerBoardTickRef.current += 1;
+        if (markerBoardTickRef.current % HUD_UPDATE_EVERY_N_FRAMES === 0) {
+          setMarkerBoardAggregate(
+            evaluateMarkerBoardWindowAggregate(markerBoardWindowRef.current.frames, markerBoardConfigRef.current)
+          );
+        }
+
+        recordCaptureFrame(captureRecorderStateRef.current, {
+          fps: fpsRef.current,
+          frameWidth: hiddeninputW,
+          frameHeight: hiddeninputH,
+          metrics: evaluateMarkerBoardFrame(captureFrame, markerBoardConfigRef.current),
+        });
 
        drawArucoMarkerIds(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH)
       }
@@ -242,6 +290,16 @@ const RealTimeProcessor = () => {
 
 
   const {modelType, setModelType, hiddenRef, modelCaller} = useModel(detect, "pose");
+
+  useEffect(() => {
+    // A trial/mode boundary: don't let stale marker-board frames from a previous
+    // aruco session (or a different modelType entirely) leak into a fresh window.
+    if (modelType === "aruco") {
+      resetMarkerBoardFrameWindow(markerBoardWindowRef.current);
+      markerBoardTickRef.current = 0;
+      setMarkerBoardAggregate(null);
+    }
+  }, [modelType]);
 
 
 
@@ -336,6 +394,12 @@ const RealTimeProcessor = () => {
                 height: `${videoDimensions.height}px`,
             }}
        />
+       {modelType === "aruco" && (
+         <>
+           <MarkerBoardHud aggregate={markerBoardAggregate} config={markerBoardConfigRef.current} />
+           <RecorderPanel stateRef={captureRecorderStateRef} />
+         </>
+       )}
     </div>
 
   );

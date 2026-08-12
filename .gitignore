@@ -28,3 +28,6 @@ dist-ssr
 *.sw?
 
 build/
+
+# generated calibrate script output (see scripts/calibrate)
+calibrate-output/

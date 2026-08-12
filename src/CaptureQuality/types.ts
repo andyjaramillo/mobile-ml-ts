@@ -18,6 +18,7 @@
 /** Canonical issue codes every check can emit. Keep in sync with the i18n key set. */
 export const CAPTURE_QUALITY_ISSUE_CODES = [
 	"MARKER_INCOMPLETE",
+	"MARKER_TOO_CLOSE",
 	"MARKER_TOO_SMALL",
 	"MARKER_SKEWED",
 	"MARKER_WRONG_ORIENTATION",
