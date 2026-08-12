@@ -100,9 +100,35 @@ export interface MultiPersonThresholds {
 	proximatePeopleMinGapNorm: number;
 }
 
+/**
+ * Grid resolution and pixel-sampling stride for the lighting pre-check - a structural
+ * choice (how finely the frame is diced), not a pass/fail number, so it is kept apart
+ * from LightingThresholds the same way MARKER_BOARD (layout) is kept apart from
+ * MarkerBoardThresholds (numbers) above. See lowLightCheck.ts for why 8x8 and why
+ * cellSampleStride=1 (no subsampling) were chosen.
+ */
+export interface LightingGrid {
+	cols: number;
+	rows: number;
+	/** Every Nth pixel within a cell is sampled, in both axes; 1 means every pixel. */
+	cellSampleStride: number;
+}
+
+export const LIGHTING_GRID: LightingGrid = {
+	cols: 8,
+	rows: 8,
+	cellSampleStride: 1,
+};
+
 export interface LightingThresholds {
-	lowLuminanceCellPctThreshold: number;
-	lowContrastThreshold: number;
+	/** BT.601 luma (0-255) at/below which a grid cell counts as dark. UNCALIBRATED. */
+	cellDarkLumaMax: number;
+	/** Recency-weighted fraction of grid cells reading dark before LOW_LIGHT fires. UNCALIBRATED. */
+	darkCellFractionThreshold: number;
+	/** Per-cell luma standard deviation (0-255) at/below which a cell counts as flat/washed-out. UNCALIBRATED. */
+	cellFlatContrastMax: number;
+	/** Recency-weighted fraction of grid cells reading flat before LOW_CONTRAST fires. UNCALIBRATED. */
+	flatCellFractionThreshold: number;
 }
 
 export interface DurationThresholds {
@@ -195,9 +221,18 @@ export const DEFAULTS: CaptureQualityConfig = {
 	multiPerson: {
 		proximatePeopleMinGapNorm: 0.05, // UNCALIBRATED GUESS - no prototype precedent; minimum gap between two person bboxes (fraction of frame width) before flagging PROXIMATE_PEOPLE instead of MULTIPLE_PEOPLE
 	},
+	// UNCALIBRATED GUESSES - no prototype precedent, no lighting data captured yet (the
+	// recorder v2 addition in captureRecorder.ts exists specifically to gather it). A
+	// dark-but-uniform room and a bright-but-flat/washed-out one are different failure
+	// modes with different remedies (add light vs. reduce glare/backlight), hence two
+	// independent thresholds rather than one combined "lighting is bad" number - see
+	// lowLightCheck.ts for why the grid-cell-fraction approach was chosen over a single
+	// whole-frame statistic.
 	lighting: {
-		lowLuminanceCellPctThreshold: 0.2, // UNCALIBRATED GUESS - no prototype precedent; fraction of frame grid cells below a low-luminance threshold before flagging LOW_LIGHT
-		lowContrastThreshold: 0.15, // UNCALIBRATED GUESS - no prototype precedent; normalized contrast measure below which LOW_CONTRAST fires
+		cellDarkLumaMax: 40,
+		darkCellFractionThreshold: 0.2,
+		cellFlatContrastMax: 10,
+		flatCellFractionThreshold: 0.2,
 	},
 	duration: {
 		minimumDurationSec: 1.0, // UNCALIBRATED GUESS - no prototype precedent; see per-assessment overrides below for why this needs to vary by assessment

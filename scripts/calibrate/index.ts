@@ -12,6 +12,8 @@ import { computeDropoutStats, summarize } from "./stats";
 import type { DistributionStats } from "./stats";
 import { buildCombos, evaluateCombo } from "./sweep";
 import type { ComboResult } from "./sweep";
+import { buildLightingCombos, evaluateLightingCombo } from "./lightingSweep";
+import type { LightingComboResult } from "./lightingSweep";
 
 const TOP_N = 15;
 
@@ -47,6 +49,26 @@ function printRecordingStats(recording: ParsedCaptureRecording): void {
 	for (const d of computeDropoutStats(recording.samples, MARKER_BOARD.expectedMarkerIds)) {
 		console.log(`      id ${d.markerId}: missing ${d.missingCount}/${recording.samples.length} (${d.missingPct.toFixed(1)}%), longest run ${d.longestMissingRun}`);
 	}
+
+	printLightingStats(recording);
+}
+
+/** Reports lighting distribution statistics per recording (spec section 5). CQ1 recordings and CQ2 recordings with no captured lighting samples both report "no lighting data" rather than throwing. */
+function printLightingStats(recording: ParsedCaptureRecording): void {
+	if (recording.lightingSamples.length === 0) {
+		console.log(`    lighting: no lighting samples (${recording.formatVersion === 1 ? "CQ1 recording - format predates lighting capture" : "CQ2 recording captured none"})`);
+		return;
+	}
+	const lumaMeans = recording.lightingSamples.map((s) => s.luma.mean);
+	const contrastMeans = recording.lightingSamples.map((s) => s.contrast.mean);
+	const lumaMins = recording.lightingSamples.map((s) => s.luma.min);
+	const lumaMaxes = recording.lightingSamples.map((s) => s.luma.max);
+	console.log(`    lighting: ${recording.lightingSamples.length} sample(s), grid=${recording.lightingGrid?.cols}x${recording.lightingGrid?.rows}`);
+	console.log(fmtStats("cellLumaMean    ", summarize(lumaMeans)));
+	console.log(fmtStats("cellContrastMean", summarize(contrastMeans)));
+	console.log(
+		`    cellLumaMean range across recording: overall_min=${Math.min(...lumaMins).toFixed(1)} overall_max=${Math.max(...lumaMaxes).toFixed(1)}`
+	);
 }
 
 function writeSweepCsv(path: string, results: readonly ComboResult[]): void {
@@ -92,6 +114,60 @@ function writeSweepCsv(path: string, results: readonly ComboResult[]): void {
 	writeFileSync(path, [header.join(","), ...rows].join("\n"));
 }
 
+function writeLightingSweepCsv(path: string, results: readonly LightingComboResult[]): void {
+	const header = [
+		"alpha",
+		"cellDarkLumaMax",
+		"darkCellFractionThreshold",
+		"cellFlatContrastMax",
+		"flatCellFractionThreshold",
+		"sourceLabel",
+		"scenarioTag",
+		"stepCount",
+		"flapCount",
+		"dominantState",
+		"pct_LOW_LIGHT",
+		"pct_LOW_CONTRAST",
+	];
+	const rows = results.flatMap((result) =>
+		result.perFile.map((f) =>
+			[
+				result.combo.alpha,
+				result.combo.thresholds.cellDarkLumaMax,
+				result.combo.thresholds.darkCellFractionThreshold,
+				result.combo.thresholds.cellFlatContrastMax,
+				result.combo.thresholds.flatCellFractionThreshold,
+				f.sourceLabel,
+				f.scenarioTag,
+				f.stepCount,
+				f.flapCount,
+				f.dominantState,
+				(f.codePct.LOW_LIGHT ?? 0).toFixed(2),
+				(f.codePct.LOW_CONTRAST ?? 0).toFixed(2),
+			].join(",")
+		)
+	);
+	mkdirSync("calibrate-output", { recursive: true });
+	writeFileSync(path, [header.join(","), ...rows].join("\n"));
+}
+
+function lightingComboLabel(result: LightingComboResult): string {
+	const t = result.combo.thresholds;
+	return `alpha=${result.combo.alpha} darkLuma<=${t.cellDarkLumaMax}(${t.darkCellFractionThreshold}) flatContrast<=${t.cellFlatContrastMax}(${t.flatCellFractionThreshold})`;
+}
+
+function printLightingComboTable(results: readonly LightingComboResult[]): void {
+	for (const result of results) {
+		console.log(`  ${lightingComboLabel(result)}  total_flaps=${result.totalFlapCount}`);
+		for (const f of result.perFile) {
+			const codes = Object.entries(f.codePct)
+				.map(([code, pct]) => `${code}=${(pct ?? 0).toFixed(1)}%`)
+				.join(" ");
+			console.log(`      ${f.sourceLabel} ("${f.scenarioTag}"): dominant=${f.dominantState} flaps=${f.flapCount} ${codes || "(no codes fired)"}`);
+		}
+	}
+}
+
 function comboLabel(result: ComboResult): string {
 	const t = result.combo.thresholds;
 	return `alpha=${result.combo.alpha} area>=${t.minimumMarkerAreaNorm} diag=[${t.diagonalRatioMin},${t.diagonalRatioMax}] orient<=${t.orientationMarginRad} fullset>=${t.minimumFullSetWeight}`;
@@ -119,7 +195,7 @@ function main(): void {
 
 	const recordings = args.flatMap((path) => parseCompactExportFile(path, readFileSync(path, "utf8")));
 	if (recordings.length === 0) {
-		console.error("no CQ1 recording lines found in the given file(s)");
+		console.error("no CQ1/CQ2 recording lines found in the given file(s)");
 		process.exitCode = 1;
 		return;
 	}
@@ -149,6 +225,33 @@ function main(): void {
 	const sortedByFlap = [...results].sort((a, b) => a.totalFlapCount - b.totalFlapCount);
 	console.log(`\n--- lowest-flap candidates (top ${TOP_N} of ${results.length}; low flap only, not validated against ground truth) ---`);
 	printComboTable(sortedByFlap.slice(0, TOP_N));
+
+	const lightingRecordings = recordings.filter((r) => r.lightingSamples.length > 0);
+	if (lightingRecordings.length === 0) {
+		console.log(
+			"\n--- lighting threshold sweep: SKIPPED ---\n" +
+				"  No CQ2 recording with lighting samples was found in the given file(s) (CQ1\n" +
+				"  recordings predate lighting capture). Re-record with the current HUD to get\n" +
+				"  CQ2 lighting data, then re-run this tool."
+		);
+	} else {
+		const lightingWindowSize = DEFAULTS.sampling.liveWindowFrameCount;
+		const lightingCombos = buildLightingCombos();
+		console.log(
+			`\n--- lighting parameter sweep: ${lightingCombos.length} combinations over ${lightingRecordings.length} recording(s) with lighting data, replay window=${lightingWindowSize} lighting-samples (approximated via estimateFractionBelow - see lightingReplay.ts) ---`
+		);
+		const lightingStart = Date.now();
+		const lightingResults = lightingCombos.map((combo) => evaluateLightingCombo(combo, lightingRecordings, lightingWindowSize));
+		console.log(`lighting sweep replayed in ${Date.now() - lightingStart}ms`);
+
+		const lightingOutPath = `calibrate-output/lighting-sweep-${Date.now()}.csv`;
+		writeLightingSweepCsv(lightingOutPath, lightingResults);
+		console.log(`full lighting grid (${lightingResults.length} combos x ${lightingRecordings.length} recording(s)) written to ${lightingOutPath}`);
+
+		const lightingSortedByFlap = [...lightingResults].sort((a, b) => a.totalFlapCount - b.totalFlapCount);
+		console.log(`\n--- lighting lowest-flap candidates (top ${TOP_N} of ${lightingResults.length}; low flap only, not validated against ground truth) ---`);
+		printLightingComboTable(lightingSortedByFlap.slice(0, TOP_N));
+	}
 
 	if (recordings.length < 2) {
 		console.log(

@@ -26,12 +26,11 @@ function decode(raw: number | null, exponent: number): number | null {
  * expected ID's bit is set". A recording where the detector briefly double-reported an
  * ID would have looked slightly worse live than it replays here.
  *
- * detectedMarkerAreaNorm is always null here: the CQ1 v1 format only ever encoded `area`
- * when the frame was a full set (see captureRecorder.ts, which sources it from
- * evaluateMarkerBoardFrame's isFullSet-gated normalizedArea), so no committed recording
- * carries a size reading for an incomplete-set frame - MARKER_TOO_CLOSE can never fire
- * on replay of an existing .cq1.txt file, only on live capture. A future recorder
- * version would need to encode this separately to make that calibratable.
+ * detectedMarkerAreaNorm is decoded from sample.detArea when present - only CQ2
+ * recordings carry it (see captureRecorder.ts CQ2 format header); a CQ1-parsed sample's
+ * detArea is always null (parse.ts), so this stays null for every existing
+ * calibration/*.cq1.txt recording exactly as before - MARKER_TOO_CLOSE still cannot fire
+ * on replay of those files, only on a fresh CQ2 recording or live capture.
  */
 export function sampleToMetrics(sample: ParsedCaptureSample, scaleExponents: readonly [number, number, number]): MarkerBoardFrameMetrics {
 	const visibleIds = MARKER_BOARD.expectedMarkerIds.filter((id) => (sample.bitmask & (1 << id)) !== 0);
@@ -45,7 +44,7 @@ export function sampleToMetrics(sample: ParsedCaptureSample, scaleExponents: rea
 		orientationAngleRad: isFullSet ? decode(sample.rot, scaleExponents[2]) : null,
 		geometryOk: null,
 		orientationOk: null,
-		detectedMarkerAreaNorm: null,
+		detectedMarkerAreaNorm: decode(sample.detArea, scaleExponents[0]),
 	};
 }
 
