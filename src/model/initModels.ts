@@ -16,7 +16,7 @@ async function preloadWasmGlue(wasmBase: string): Promise<void> {
   }
 }
 export async function initObjectDetector(hiddenCanvas: OffscreenCanvas) {
-  const res = await preloadWasmGlue("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm")
+  await preloadWasmGlue("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm")
   const vision =  await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
   )

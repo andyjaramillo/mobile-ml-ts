@@ -1,7 +1,6 @@
 import SubjectNotAtStart from "../warnings/2SubjectNotAtStart";
 import { AR_Detector } from "../aruco";
 import { ObjectDetector } from "@mediapipe/tasks-vision";
-import { drawArucoMarkerIds } from "../warnings/drawing_utils";
 
 export type SubjectStartCtx = {
   current_frame_count: number;
@@ -11,6 +10,10 @@ export type SubjectStartCtx = {
   offctx;
   st: SubjectNotAtStart;
   notif: { warning: (message: string) => void };
+  // used only by the subject_start2 legacy calling convention below
+  frame_count?: number;
+  imageData?: ImageData;
+  displayCanvas?: OffscreenCanvas | HTMLCanvasElement;
 };
 
 export async function subject_start(ctx: SubjectStartCtx) {

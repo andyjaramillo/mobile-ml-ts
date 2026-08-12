@@ -1,8 +1,8 @@
-import React, { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, type ChangeEvent } from "react";
 import Webcam from "react-webcam";
-import { PoseLandmarker, FilesetResolver, DrawingUtils, ObjectDetector } from "@mediapipe/tasks-vision";
+import { PoseLandmarker, ObjectDetector } from "@mediapipe/tasks-vision";
 import { AR_Detector } from "./aruco";
-import {drawArucoMarkerIds, drawArucoMarkers, drawBoundingBoxes, drawPose} from "./warnings/drawing_utils";
+import {drawArucoMarkerIds} from "./warnings/drawing_utils";
 import { useNotify } from "./warnings/Notification";
 import Sampler from "./detections/sampler"
 import useModel from "./model/useModel";
@@ -182,19 +182,14 @@ const RealTimeProcessor = () => {
       if (modelType === "pose") {
         const poseLandmarker = modelCaller as PoseLandmarker;
         const results = poseLandmarker.detectForVideo(video, startTimeMs);
-
-     //   drawPose(ctx,canvas,hiddenRef, drawingUtilsRef, results)
         results.close?.();
 
       } else if (modelType === "object") {
         const objectDetector = modelCaller as ObjectDetector;
-        const results = objectDetector.detectForVideo(video, startTimeMs);
+        objectDetector.detectForVideo(video, startTimeMs);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const detections = results.detections.filter((detect_) => detect_.categories[0].categoryName  == "person")
-     //   drawBoundingBoxes(canvas, video, ctx, detections, facingMode, hiddenRef, drawingUtilsRef)
- 
-   
       } else if (modelType === "aruco") {
+        const arDetector = modelCaller as AR_Detector;
         const hiddeninputW = Math.min(640, video.videoWidth);
         const hiddeninputH = Math.round(hiddeninputW * (video.videoHeight / video.videoWidth));
 
@@ -207,10 +202,10 @@ const RealTimeProcessor = () => {
         offCtx.drawImage(video, 0, 0, hiddeninputW, hiddeninputH);
 
         const imageData = offCtx.getImageData(0, 0, hiddeninputW, hiddeninputH);
-        const unfiltered_markers = await modelCaller.detectImage(imageData);
+        const unfiltered_markers = await arDetector.detectImage(imageData);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        let markers = []
+        const markers = []
         for(let i =0; i < unfiltered_markers.length; i++){
            if (unfiltered_markers[i].id >= 0 && unfiltered_markers[i].id <= 8) {
            markers.push(unfiltered_markers[i])
@@ -220,12 +215,11 @@ const RealTimeProcessor = () => {
         // sample for lighting and multi-person checks
         try {
         if (!samplerRef.current) samplerRef.current = new Sampler(hiddenRef, () => fpsRef.current, notif, ['aruco']);
-        samplerRef.current && samplerRef.current.sampleAruco && samplerRef.current.sampleAruco(imageData, video, markers, canvas);
+        samplerRef.current?.sampleAruco?.(imageData, video, markers, canvas);
         } catch (e) {
           console.warn('sampler (aruco) error', e);
         }
-      
-       //drawArucoMarkers(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH);
+
        drawArucoMarkerIds(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH)
       }
 
@@ -247,7 +241,7 @@ const RealTimeProcessor = () => {
   };
 
 
-  const {modelType, setModelType, hiddenRef, modelCaller, drawingUtilsRef} = useModel(detect, "pose");
+  const {modelType, setModelType, hiddenRef, modelCaller} = useModel(detect, "pose");
 
 
 
@@ -282,11 +276,7 @@ const RealTimeProcessor = () => {
           aspectRatio: window.innerHeight / window.innerWidth,
           frameRate: { ideal: 30, max: 30 },
         }}
-        onUserMedia={(stream) => {
-          const track = stream.getVideoTracks()[0];
-          const settings = track.getSettings();
-
-
+        onUserMedia={() => {
           // Recalculate dimensions when camera starts
           setTimeout(() => calculateVideoDimensions(webcamRef.current.video), 100);
         }}
@@ -298,7 +288,7 @@ const RealTimeProcessor = () => {
           top: `${0}px`,
           left: `${0}px`,
         }}
-        onChange={(e) => setModelType(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLSelectElement>) => setModelType(e.target.value as "pose" | "object" | "aruco")}
         value={modelType}
       >
         <option value="pose">Pose Landmarker</option>

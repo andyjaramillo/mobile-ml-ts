@@ -1,4 +1,4 @@
-﻿/*
+/*
 Copyright (c) 2020 Damiano Falcioni
 Copyright (c) 2011 Juan Mellado
 
@@ -210,6 +210,20 @@ export class AR_Detector {
    perfLogs
     frameCounter
     maxExportFrames
+  streamConfig?: {
+    width?: number;
+    height?: number;
+    imageSize?: number;
+    index?: number;
+    imageData?: Uint8ClampedArray;
+    callback?: (image: { width: number; height: number; data: Uint8ClampedArray }, markerList: unknown) => void;
+  };
+  mjpeg?: {
+    decoderFn: (jpegImage: number[]) => Uint8ClampedArray;
+    chunks: any[];
+    SOI: number[];
+    EOI: number[];
+  };
   constructor() {
     this.CV = new CV();
     this.grey = new Image();
@@ -276,8 +290,6 @@ detectImage(arg1: any, arg2?: any, arg3?: any, arg4?: any, inputW = 256, inputH 
       canvasContext.clearRect(0, 0, width, height);
 
       for (let i = 0; i < res.length; i++) {
-        // Log marker (kept from original behavior)
-        console.log("Marker ID: " + res[i].id + ", Hamming Distance: " + res[i].hammingDistance);
         if (res[i].id < 0 || res[i].id > 8) {
           continue;
         }
@@ -302,8 +314,15 @@ detectImage(arg1: any, arg2?: any, arg3?: any, arg4?: any, inputW = 256, inputH 
         const endTotal = performance.now();
         const totalTime = endTotal - startTotal;
         const fps = 1000 / totalTime;
+        const inferenceTime = performance.now() - startTotal;
         this.frameCounter++;
         this.lastFrameTime = performance.now();
+        this.perfLogs.push({
+          frame: this.frameCounter,
+          inference_ms: inferenceTime.toFixed(2),
+          total_ms: totalTime.toFixed(2),
+          fps: fps.toFixed(1)
+        });
 
         this.drawNumber(canvasContext, fps.toFixed(1) + " FPS");
       }
@@ -311,6 +330,21 @@ detectImage(arg1: any, arg2?: any, arg3?: any, arg4?: any, inputW = 256, inputH 
 
     return res;
   };
+
+  exportPerformanceLogs() {
+    let csvContent = "Frame,Inference_ms,Total_ms,FPS\n";
+    this.perfLogs.forEach(log => {
+        csvContent += `${log.frame},${log.inference_ms},${log.total_ms},${log.fps}\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Performance_Log_EfficientDet.csv`;
+    link.click();
+    console.log("Performance log exported successfully.");
+}
 
       drawNumber(ctx, number) {
         // 1. Calculate the center of the canvas

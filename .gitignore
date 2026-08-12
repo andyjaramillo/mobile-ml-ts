@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Per-user Claude workspace - never shared code
+.claude/
+.playwright-mcp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

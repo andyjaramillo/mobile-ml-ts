@@ -1,5 +1,6 @@
-import { NotifyType } from "./Notification";
 import { WARNINGS } from "./warnings";
+
+type TriggerNotifier = { warning: (message: string) => void };
 
 const HYPERPARAMETERS = {
     T_disp_norm: 0.01, // normalized mean frame-to-frame centroid displacement (fraction of diag)
@@ -32,7 +33,7 @@ class SubjectNotAtStart {
     #sumXY = 0;
     #sumX2 = 0;
 
-    trigger(offctx, detections, notif: NotifyType, marker_centroid: Point, current_frame_count: number) {
+    trigger(_offctx, detections, notif: TriggerNotifier, marker_centroid: Point, current_frame_count: number) {
         this.#marker_centroid = marker_centroid;
         if (detections.length == 0) {
             notif.warning(`${WARNINGS.SUBJECT_AT_START_LINE_UNKNOWN}, Frame ${current_frame_count}`);
@@ -42,10 +43,8 @@ class SubjectNotAtStart {
             notif.warning(`${WARNINGS.TOO_MANY_PEOPLE}, Frame ${current_frame_count}`);
             return false
         }
-        const diag = Math.hypot(offctx.canvas.width, offctx.canvas.height) || 1;
-
         const detection = detections[0]
-        const { originX, originY, width, height } = detection.boundingBox;
+        const { width, height } = detection.boundingBox;
         const current_centroid = this.#get_centroid(detection)
 
 

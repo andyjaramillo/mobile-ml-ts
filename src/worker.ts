@@ -9,34 +9,12 @@ import SubjectNotAtStart from "./warnings/2SubjectNotAtStart";
 import { initArucoDetector, initObjectDetector } from "./model/initModels";
 import { subject_start } from "./processors/subject_start";
 
-let renderer = null;
 let startTime = null;
 let pendingStatus = null;
-let pendingFrame = null;
-let frameCount = 0;
 
 const method_map = {
   subject_start,
 };
-
-class Canvas2DRenderer {
-  #canvas = null;
-  #ctx = null;
-  constructor(canvas) {
-    this.#canvas = canvas;
-    this.#ctx =canvas.getContext("2d", { willReadFrequently: true });
-  }
-  draw(frame) {
-    // this.#canvas.width = frame.displayWidth;
-    // this.#canvas.height = frame.displayHeight;
-    this.#ctx.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
-    this.#ctx.translate(this.#canvas.width, 0);
-    this.#ctx.rotate(Math.PI / 2);
-    this.#ctx.drawImage(frame, 0, 0, this.#canvas.width, this.#canvas.height);
-    this.#ctx.restore();
-    frame.close();
-  }
-}
 
 function setStatus(type, message) {
   if (pendingStatus) {
@@ -52,24 +30,6 @@ function setStatus(type, message) {
 function statusAnimationFrame() {
   self.postMessage(pendingStatus);
   pendingStatus = null;
-}
-
-function renderFrame(frame) {
-
-  if (!pendingFrame) {
-    requestAnimationFrame(renderAnimationFrame);
-    
-  } else{
-    pendingFrame.close();
-  }
-  pendingFrame = frame;
- 
-  
-}
-
-function renderAnimationFrame() {
-  renderer.draw(pendingFrame);
-  pendingFrame = null;
 }
 
 async function initPipeline(displayCanvas) {
@@ -89,8 +49,7 @@ async function initPipeline(displayCanvas) {
 
 async function start({ dataUri, canvasOff, method, hyperparameters }) {
 
-  renderer = new Canvas2DRenderer(canvasOff);
- let pipelineCtx  = await initPipeline(canvasOff);
+ const pipelineCtx  = await initPipeline(canvasOff);
     const offctx = canvasOff.getContext("2d", { willReadFrequently: true });
   const runFrame = method_map[method];
   let current_frame_count = 0;
@@ -103,18 +62,14 @@ async function start({ dataUri, canvasOff, method, hyperparameters }) {
       if (startTime == null) {
         startTime = performance.now();
       } else {
-        const elapsed = (performance.now() - startTime) / 1000; // in seconds
         current_frame_count += 1
-        const fps = ++frameCount / elapsed;
-       //  setStatus("fps", `${elapsed},${fps}`)
         if( frame.timestamp / 1000000 >= hyperparameters.max_pre_video_check){
             frame.close();
-            decoder.close(); 
+            decoder.close();
             return;
         }
-        //renderFrame(frame);
-        runFrame({ ...pipelineCtx, frame, current_frame_count, offctx }).then((status) => {
-           
+        runFrame({ ...pipelineCtx, frame, current_frame_count, offctx }).then((_status) => {
+
         }).catch((e) =>
           setStatus("process", String(e))
         );
@@ -128,7 +83,7 @@ async function start({ dataUri, canvasOff, method, hyperparameters }) {
     },
   });
 
-  const demuxer = new MP4Demuxer(dataUri, {
+  new MP4Demuxer(dataUri, {
     onConfig(config) {
       setStatus("decode", `${config.codec} @ ${config.codedWidth}x${config.codedHeight}`);
       decoder.configure(config);
