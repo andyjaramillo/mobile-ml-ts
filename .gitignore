@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Per-user Claude workspace - never shared code
+.claude/
+.playwright-mcp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -24,3 +28,10 @@ dist-ssr
 *.sw?
 
 build/
+
+# generated calibrate script output (see scripts/calibrate)
+calibrate-output/
+
+# CurveAssure product asset - pulled from S3, not for a public repo
+# Fetch with: aws s3 cp --profile ca-dev s3://curveassure-redirect/<path> src/assets/
+src/assets/gait-clinic-animated-overlay.apng

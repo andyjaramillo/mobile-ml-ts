@@ -1,6 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
-import SubjectNotAtStart from "./warnings/2SubjectNotAtStart";
-import useModel from "./model/useModel";
+import { useEffect, useRef, useState } from "react";
 
 const HYPERPARAMETERS = {
     max_pre_video_check: 2 // 2 seconds

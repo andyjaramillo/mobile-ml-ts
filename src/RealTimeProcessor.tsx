@@ -1,13 +1,64 @@
-import React, { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, type ChangeEvent } from "react";
 import Webcam from "react-webcam";
-import { PoseLandmarker, FilesetResolver, DrawingUtils, ObjectDetector } from "@mediapipe/tasks-vision";
+import { PoseLandmarker, ObjectDetector } from "@mediapipe/tasks-vision";
 import { AR_Detector } from "./aruco";
-import {drawArucoMarkerIds, drawArucoMarkers, drawBoundingBoxes, drawPose} from "./warnings/drawing_utils";
+import {drawArucoMarkerIds} from "./warnings/drawing_utils";
 import { useNotify } from "./warnings/Notification";
 import Sampler from "./detections/sampler"
 import useModel from "./model/useModel";
+import { DEFAULTS as CAPTURE_QUALITY_DEFAULTS, MARKER_BOARD } from "./CaptureQuality/captureQualityConfig";
+import {
+  createMarkerBoardFrameWindow,
+  defaultMarkerBoardCheckConfig,
+  evaluateMarkerBoardFrame,
+  evaluateMarkerBoardWindowAggregate,
+  pushMarkerBoardFrame,
+  resetMarkerBoardFrameWindow,
+} from "./CaptureQuality/markerBoardCheck";
+import type { MarkerBoardWindowAggregate } from "./CaptureQuality/markerBoardCheck";
+import {
+  createLowLightFrameWindow,
+  defaultLowLightCheckConfig,
+  evaluateLowLightFrame,
+  evaluateLowLightWindowAggregate,
+  pushLowLightFrame,
+  resetLowLightFrameWindow,
+} from "./CaptureQuality/lowLightCheck";
+import type { LowLightWindowAggregate } from "./CaptureQuality/lowLightCheck";
+import type { CaptureQualityFrameSample } from "./CaptureQuality/types";
+import MarkerBoardHud from "./CaptureQualityHud/MarkerBoardHud";
+import LowLightHud from "./CaptureQualityHud/LowLightHud";
+import RecorderPanel from "./CaptureQualityHud/RecorderPanel";
+import GuidanceBanner from "./CaptureQualityHud/GuidanceBanner";
+import { createCaptureRecorderState, recordCaptureFrame } from "./CaptureQualityHud/captureRecorder";
 
+const EXPECTED_MARKER_IDS = new Set(MARKER_BOARD.expectedMarkerIds);
+const HUD_UPDATE_EVERY_N_FRAMES = 3; // throttle React state updates off the ~25-30fps detect loop
 
+// The ArUco path (below) reads its ImageData through `offCtx.filter =
+// "contrast(2) brightness(1.1)"` before drawImage/getImageData - deliberately boosted to
+// help marker detection. Measuring lighting on that data would report a room
+// considerably brighter/higher-contrast than it actually is, defeating the point of the
+// check (see lowLightCheck.ts header), so lighting needs its own UNFILTERED draw. A
+// second full-resolution getImageData (~640x1138 for the recorded portrait captures) is
+// too expensive to do a second time per frame on a phone - instead this draws to a tiny
+// dedicated canvas. LONG_EDGE=128 keeps an 8x8 grid cell at roughly 16px on the long
+// axis (and >=MIN_SHORT_EDGE/8 ~= 4px on the short axis, more realistically ~9-16px for
+// the aspect ratios this camera actually produces) - enough pixels per cell for a stable
+// mean/std (see evaluateLowLightFrame's numerical-stability comment), while the total
+// pixel count (at most ~128*128, typically ~128*72) stays two orders of magnitude below
+// the detector's own 640-wide canvas, so the extra drawImage+getImageData pair is cheap.
+const LIGHTING_CANVAS_LONG_EDGE = 128;
+const LIGHTING_CANVAS_MIN_SHORT_EDGE = 32;
+
+function computeLightingCanvasSize(videoWidth: number, videoHeight: number): { width: number; height: number } {
+  if (!(videoWidth > 0) || !(videoHeight > 0)) return { width: LIGHTING_CANVAS_LONG_EDGE, height: LIGHTING_CANVAS_MIN_SHORT_EDGE };
+  const aspect = videoWidth / videoHeight;
+  if (aspect >= 1) {
+    return { width: LIGHTING_CANVAS_LONG_EDGE, height: Math.max(LIGHTING_CANVAS_MIN_SHORT_EDGE, Math.round(LIGHTING_CANVAS_LONG_EDGE / aspect)) };
+  }
+  return { width: Math.max(LIGHTING_CANVAS_MIN_SHORT_EDGE, Math.round(LIGHTING_CANVAS_LONG_EDGE * aspect)), height: LIGHTING_CANVAS_LONG_EDGE };
+}
 
 const RealTimeProcessor = () => {
   const webcamRef = useRef(null);
@@ -17,6 +68,10 @@ const RealTimeProcessor = () => {
   const fpsRef = useRef(0);
   
   const [facingMode, setFacingMode] = useState("user"); // "user" or "environment"
+  // Debug HUD (MarkerBoardHud/LowLightHud, the developer-chip panels) defaults ON here to
+  // preserve this page's existing calibration workflow; GuidanceBanner (patient-facing,
+  // always shown) carries its own toggle so it can be flipped off to see the patient view.
+  const [showDebugHud, setShowDebugHud] = useState(true);
 
   
   const [videoDimensions, setVideoDimensions] = useState({
@@ -28,6 +83,25 @@ const RealTimeProcessor = () => {
   const notif = useNotify();
   // sampler for setup checks (collects frames and runs analysis)
   const samplerRef = useRef(null);
+
+  // marker-board capture-quality check: caller-owned bounded window + throttled HUD state
+  const markerBoardConfigRef = useRef(defaultMarkerBoardCheckConfig(CAPTURE_QUALITY_DEFAULTS));
+  const markerBoardWindowRef = useRef(createMarkerBoardFrameWindow(CAPTURE_QUALITY_DEFAULTS.sampling.liveWindowFrameCount));
+  const markerBoardTickRef = useRef(0);
+  const [markerBoardAggregate, setMarkerBoardAggregate] = useState<MarkerBoardWindowAggregate | null>(null);
+
+  // lighting capture-quality check: same caller-owned-window pattern as marker board,
+  // but its own window/config/tick counter since it runs off a separate unfiltered
+  // canvas (see computeLightingCanvasSize above) rather than the detector's own frames.
+  const lowLightConfigRef = useRef(defaultLowLightCheckConfig(CAPTURE_QUALITY_DEFAULTS));
+  const lowLightWindowRef = useRef(createLowLightFrameWindow(CAPTURE_QUALITY_DEFAULTS.sampling.liveWindowFrameCount));
+  const lightingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [lowLightAggregate, setLowLightAggregate] = useState<LowLightWindowAggregate | null>(null);
+
+  // Capture-quality data recorder: mutated every aruco tick (recordCaptureFrame is a
+  // no-op unless recording), independent of the HUD's throttled aggregate updates -
+  // decimation for the size cap happens inside the recorder itself, not here.
+  const captureRecorderStateRef = useRef(createCaptureRecorderState());
 
 
 
@@ -182,19 +256,14 @@ const RealTimeProcessor = () => {
       if (modelType === "pose") {
         const poseLandmarker = modelCaller as PoseLandmarker;
         const results = poseLandmarker.detectForVideo(video, startTimeMs);
-
-     //   drawPose(ctx,canvas,hiddenRef, drawingUtilsRef, results)
         results.close?.();
 
       } else if (modelType === "object") {
         const objectDetector = modelCaller as ObjectDetector;
-        const results = objectDetector.detectForVideo(video, startTimeMs);
+        objectDetector.detectForVideo(video, startTimeMs);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const detections = results.detections.filter((detect_) => detect_.categories[0].categoryName  == "person")
-     //   drawBoundingBoxes(canvas, video, ctx, detections, facingMode, hiddenRef, drawingUtilsRef)
- 
-   
       } else if (modelType === "aruco") {
+        const arDetector = modelCaller as AR_Detector;
         const hiddeninputW = Math.min(640, video.videoWidth);
         const hiddeninputH = Math.round(hiddeninputW * (video.videoHeight / video.videoWidth));
 
@@ -207,25 +276,84 @@ const RealTimeProcessor = () => {
         offCtx.drawImage(video, 0, 0, hiddeninputW, hiddeninputH);
 
         const imageData = offCtx.getImageData(0, 0, hiddeninputW, hiddeninputH);
-        const unfiltered_markers = await modelCaller.detectImage(imageData);
+        const unfiltered_markers = await arDetector.detectImage(imageData);
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        let markers = []
-        for(let i =0; i < unfiltered_markers.length; i++){
-           if (unfiltered_markers[i].id >= 0 && unfiltered_markers[i].id <= 8) {
-           markers.push(unfiltered_markers[i])
-          }
-        }
-        
+        const markers = unfiltered_markers.filter((m) => EXPECTED_MARKER_IDS.has(m.id));
+
         // sample for lighting and multi-person checks
         try {
         if (!samplerRef.current) samplerRef.current = new Sampler(hiddenRef, () => fpsRef.current, notif, ['aruco']);
-        samplerRef.current && samplerRef.current.sampleAruco && samplerRef.current.sampleAruco(imageData, video, markers, canvas);
+        samplerRef.current?.sampleAruco?.(imageData, video, markers);
         } catch (e) {
           console.warn('sampler (aruco) error', e);
         }
-      
-       //drawArucoMarkers(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH);
+
+        // Capture-quality marker-board check. frameWidth/frameHeight here MUST stay in
+        // the same coordinate space as marker.corners (the detector's own input
+        // resolution) - mixing in the video element's CSS display size here is the
+        // exact bug markerBoardCheck.ts was written to fix.
+        const captureFrame: CaptureQualityFrameSample = {
+          imageData: null,
+          timestampMs: startTimeMs,
+          frameWidth: hiddeninputW,
+          frameHeight: hiddeninputH,
+          people: null,
+          markers,
+        };
+        pushMarkerBoardFrame(markerBoardWindowRef.current, captureFrame);
+        markerBoardTickRef.current += 1;
+        if (markerBoardTickRef.current % HUD_UPDATE_EVERY_N_FRAMES === 0) {
+          setMarkerBoardAggregate(
+            evaluateMarkerBoardWindowAggregate(
+              markerBoardWindowRef.current.frames,
+              markerBoardConfigRef.current,
+              markerBoardWindowRef.current.persistence,
+              markerBoardWindowRef.current.hysteresis
+            )
+          );
+        }
+
+        // Lighting check: unfiltered draw to its own tiny canvas - see the
+        // computeLightingCanvasSize comment above for why this must not reuse offCtx
+        // (which is contrast/brightness-boosted for marker detection).
+        let lightingMetrics = null;
+        if (!lightingCanvasRef.current) lightingCanvasRef.current = document.createElement('canvas');
+        const lightingCanvas = lightingCanvasRef.current;
+        const { width: lightW, height: lightH } = computeLightingCanvasSize(video.videoWidth, video.videoHeight);
+        if (lightingCanvas.width !== lightW || lightingCanvas.height !== lightH) {
+          lightingCanvas.width = lightW;
+          lightingCanvas.height = lightH;
+        }
+        const lightCtx = lightingCanvas.getContext('2d', { willReadFrequently: true });
+        if (lightCtx) {
+          lightCtx.drawImage(video, 0, 0, lightW, lightH);
+          const lightingImageData = lightCtx.getImageData(0, 0, lightW, lightH);
+          const lightingFrame: CaptureQualityFrameSample = {
+            imageData: lightingImageData,
+            timestampMs: startTimeMs,
+            frameWidth: lightW,
+            frameHeight: lightH,
+            people: null,
+            markers: null,
+          };
+          pushLowLightFrame(lowLightWindowRef.current, lightingFrame);
+          lightingMetrics = evaluateLowLightFrame(lightingFrame, lowLightConfigRef.current);
+          if (markerBoardTickRef.current % HUD_UPDATE_EVERY_N_FRAMES === 0) {
+            setLowLightAggregate(
+              evaluateLowLightWindowAggregate(lowLightWindowRef.current.frames, lowLightConfigRef.current)
+            );
+          }
+        }
+
+        recordCaptureFrame(captureRecorderStateRef.current, {
+          fps: fpsRef.current,
+          frameWidth: hiddeninputW,
+          frameHeight: hiddeninputH,
+          metrics: evaluateMarkerBoardFrame(captureFrame, markerBoardConfigRef.current),
+          lighting: lightingMetrics,
+        });
+
        drawArucoMarkerIds(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH)
       }
 
@@ -247,7 +375,19 @@ const RealTimeProcessor = () => {
   };
 
 
-  const {modelType, setModelType, hiddenRef, modelCaller, drawingUtilsRef} = useModel(detect, "pose");
+  const {modelType, setModelType, hiddenRef, modelCaller} = useModel(detect, "pose");
+
+  useEffect(() => {
+    // A trial/mode boundary: don't let stale marker-board frames from a previous
+    // aruco session (or a different modelType entirely) leak into a fresh window.
+    if (modelType === "aruco") {
+      resetMarkerBoardFrameWindow(markerBoardWindowRef.current);
+      markerBoardTickRef.current = 0;
+      setMarkerBoardAggregate(null);
+      resetLowLightFrameWindow(lowLightWindowRef.current);
+      setLowLightAggregate(null);
+    }
+  }, [modelType]);
 
 
 
@@ -282,11 +422,7 @@ const RealTimeProcessor = () => {
           aspectRatio: window.innerHeight / window.innerWidth,
           frameRate: { ideal: 30, max: 30 },
         }}
-        onUserMedia={(stream) => {
-          const track = stream.getVideoTracks()[0];
-          const settings = track.getSettings();
-
-
+        onUserMedia={() => {
           // Recalculate dimensions when camera starts
           setTimeout(() => calculateVideoDimensions(webcamRef.current.video), 100);
         }}
@@ -298,7 +434,7 @@ const RealTimeProcessor = () => {
           top: `${0}px`,
           left: `${0}px`,
         }}
-        onChange={(e) => setModelType(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLSelectElement>) => setModelType(e.target.value as "pose" | "object" | "aruco")}
         value={modelType}
       >
         <option value="pose">Pose Landmarker</option>
@@ -346,6 +482,25 @@ const RealTimeProcessor = () => {
                 height: `${videoDimensions.height}px`,
             }}
        />
+       {modelType === "aruco" && (
+         <>
+           <GuidanceBanner
+             markerBoardAggregate={markerBoardAggregate}
+             lowLightAggregate={lowLightAggregate}
+             markerBoardConfig={markerBoardConfigRef.current}
+             showDebugHud={showDebugHud}
+             onToggleDebugHud={() => setShowDebugHud((v) => !v)}
+             topOffsetPx={40}
+           />
+           {showDebugHud && (
+             <>
+               <MarkerBoardHud aggregate={markerBoardAggregate} config={markerBoardConfigRef.current} />
+               <LowLightHud aggregate={lowLightAggregate} config={lowLightConfigRef.current} />
+             </>
+           )}
+           <RecorderPanel stateRef={captureRecorderStateRef} topOffsetPx={104} />
+         </>
+       )}
     </div>
 
   );
