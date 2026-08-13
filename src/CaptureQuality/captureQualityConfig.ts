@@ -195,33 +195,76 @@ export interface MultiPersonThresholds {
 
 /**
  * Grid resolution and pixel-sampling stride for the lighting pre-check - a structural
- * choice (how finely the frame is diced), not a pass/fail number, so it is kept apart
- * from LightingThresholds the same way MARKER_BOARD (layout) is kept apart from
- * MarkerBoardThresholds (numbers) above. See lowLightCheck.ts for why 8x8 and why
- * cellSampleStride=1 (no subsampling) were chosen.
+ * choice (how finely the ROI is diced), not a pass/fail number, so it is kept apart from
+ * LightingThresholds the same way MARKER_BOARD (layout) is kept apart from
+ * MarkerBoardThresholds (numbers) above.
+ *
+ * 4x4 rather than a finer dice because the grid covers the ROI (a fraction of the
+ * ~128-long-edge lighting canvas), not the whole frame: over the default ROI that lands
+ * ~150-165 raw pixels per cell, and an 8x8 dice would starve most cells.
  */
 export interface LightingGrid {
 	cols: number;
 	rows: number;
 	/** Every Nth pixel within a cell is sampled, in both axes; 1 means every pixel. */
 	cellSampleStride: number;
+	/** Minimum sampled pixels before a cell counts as computable; below it the cell is left null. Guards a tightly-cropped ROI whose cells are too small for a stable mean/std. */
+	minPixelsPerCell: number;
 }
 
 export const LIGHTING_GRID: LightingGrid = {
-	cols: 8,
-	rows: 8,
+	cols: 4,
+	rows: 4,
 	cellSampleStride: 1,
+	minPixelsPerCell: 25,
+};
+
+/** Normalized [0,1] rectangle, expressed as fractions of a frame's own width/height - same unit convention as every other threshold in this file. */
+export interface LightingRoiRect {
+	xNorm: number;
+	yNorm: number;
+	widthNorm: number;
+	heightNorm: number;
+}
+
+/**
+ * Which region of the frame the lighting check measures - feeds resolveLowLightRoi's
+ * three-path selection in lowLightCheck.ts. "Where to look", not "what counts as bad",
+ * so it is kept apart from LightingThresholds the same way LightingGrid is.
+ */
+export interface LightingRoiConfig {
+	/** Padding added to a detected-marker bounding box on each side, as a fraction of that bbox's OWN size. UNCALIBRATED - no measured data on how tightly the nine-marker bbox hugs the physical board edge. */
+	marginFrac: number;
+	/** Absolute floor for the same padding, as a fraction of the FRAME - guards a near-degenerate bbox (one or two closely-spaced markers) that marginFrac alone would barely pad. */
+	minMarginNorm: number;
+	/**
+	 * Fallback region when no marker has been seen at all. UNCALIBRATED: the board lies
+	 * flat on the floor and every recording here frames it in the lower half, so this
+	 * spans that band generously rather than guessing exact framing. Replace once an
+	 * overlay-guide component exists to source a real box from.
+	 */
+	defaultRoi: LightingRoiRect;
+}
+
+export const LIGHTING_ROI: LightingRoiConfig = {
+	marginFrac: 0.25,
+	minMarginNorm: 0.04,
+	defaultRoi: { xNorm: 0.15, yNorm: 0.5, widthNorm: 0.7, heightNorm: 0.45 },
 };
 
 export interface LightingThresholds {
 	/** BT.601 luma (0-255) at/below which a grid cell counts as dark. UNCALIBRATED. */
 	cellDarkLumaMax: number;
-	/** Recency-weighted fraction of grid cells reading dark before LOW_LIGHT fires. UNCALIBRATED. */
+	/** Recency-weighted fraction of ROI grid cells reading dark before LOW_LIGHT fires. UNCALIBRATED. */
 	darkCellFractionThreshold: number;
+	/** Hysteresis clear level for LOW_LIGHT: once triggered, the fraction must drop to/below THIS, not just back under darkCellFractionThreshold, before the warning clears. UNCALIBRATED - no ROI-scoped recording exists yet to measure a real noise band, so the gap is a placeholder. */
+	darkCellFractionClearThreshold: number;
 	/** Per-cell luma standard deviation (0-255) at/below which a cell counts as flat/washed-out. UNCALIBRATED. */
 	cellFlatContrastMax: number;
-	/** Recency-weighted fraction of grid cells reading flat before LOW_CONTRAST fires. UNCALIBRATED. */
+	/** Recency-weighted fraction of ROI grid cells reading flat before LOW_CONTRAST fires. UNCALIBRATED. */
 	flatCellFractionThreshold: number;
+	/** Hysteresis clear level for LOW_CONTRAST - same convention and same UNCALIBRATED caveat as darkCellFractionClearThreshold above. */
+	flatCellFractionClearThreshold: number;
 }
 
 export interface DurationThresholds {
@@ -424,18 +467,19 @@ export const DEFAULTS: CaptureQualityConfig = {
 	multiPerson: {
 		proximatePeopleMinGapNorm: 0.05, // UNCALIBRATED GUESS - no prototype precedent; minimum gap between two person bboxes (fraction of frame width) before flagging PROXIMATE_PEOPLE instead of MULTIPLE_PEOPLE
 	},
-	// UNCALIBRATED GUESSES - no prototype precedent, no lighting data captured yet (the
-	// recorder v2 addition in captureRecorder.ts exists specifically to gather it). A
-	// dark-but-uniform room and a bright-but-flat/washed-out one are different failure
-	// modes with different remedies (add light vs. reduce glare/backlight), hence two
-	// independent thresholds rather than one combined "lighting is bad" number - see
-	// lowLightCheck.ts for why the grid-cell-fraction approach was chosen over a single
-	// whole-frame statistic.
+	// UNCALIBRATED GUESSES - no prototype precedent, and no ROI-scoped recording exists
+	// yet to fit these against. They are deliberately not tuned to suppress false
+	// LOW_CONTRAST warnings; scoping the grid to the board (see lowLightCheck.ts's header)
+	// is what addresses those. A dark-but-uniform room and a bright-but-flat one are
+	// different failure modes with different remedies (add light vs. reduce glare), hence
+	// two independent thresholds rather than one combined "lighting is bad" number.
 	lighting: {
 		cellDarkLumaMax: 40,
 		darkCellFractionThreshold: 0.2,
+		darkCellFractionClearThreshold: 0.15,
 		cellFlatContrastMax: 10,
 		flatCellFractionThreshold: 0.2,
+		flatCellFractionClearThreshold: 0.15,
 	},
 	duration: {
 		minimumDurationSec: 1.0, // UNCALIBRATED GUESS - no prototype precedent; see per-assessment overrides below for why this needs to vary by assessment

@@ -7,13 +7,23 @@
 // flow (FDA gait's three trials through one camera component) does not let trial 2
 // inherit trial 1's frames, same as MarkerBoardFrameWindow.
 //
-// PIXEL SOURCE CONTRACT: frame.imageData here MUST come from an UNFILTERED draw of the
-// video (no contrast/brightness CSS filter). The caller (RealTimeProcessor.tsx) draws
-// the ArUco path through `offCtx.filter = "contrast(2) brightness(1.1)"` to help marker
-// detection - measuring lighting on that would report a room considerably brighter and
-// higher-contrast than it actually is, defeating the point of this check. This module
-// has no way to verify that contract (it only sees pixels), so it is the caller's job -
-// see the offscreen-canvas comment in RealTimeProcessor.tsx.
+// ROI SCOPING: luminance and contrast are measured over a region around the marker
+// board, not the whole frame. A whole-frame grid produced false LOW_CONTRAST warnings on
+// well-lit setups, because blank wall, plain carpet and ceiling have near-zero local
+// contrast in any ordinary room - those cells say nothing about whether the camera can
+// read the board. resolveLowLightRoi picks the region in priority order: (1) this frame's
+// own detected-marker bounding box, padded; (2) the most recent such box still in the
+// rolling window, since detection is intermittent and falling straight to a default would
+// make the reading jitter frame to frame; (3) a configured default region
+// (LIGHTING_ROI.defaultRoi). Path 3 is not a lesser fallback - it is the case that
+// matters most, since a room too dark to detect the board at all is exactly the scenario
+// with no markers to derive an ROI from, and the check must keep running there.
+//
+// PIXEL SOURCE CONTRACT, enforced by callers since this module only sees pixels:
+// frame.imageData must come from an UNFILTERED draw of the video, because the ArUco path
+// draws through a contrast/brightness filter that would report a room far brighter than
+// it is. frame.markers must already be in THIS frame's pixel space, so a caller feeding a
+// smaller lighting canvas must rescale detector-space corners into it first.
 //
 // LUMA CHOICE: BT.601 (0.299R + 0.587G + 0.114B), not LAB lightness. The spec floats LAB
 // as perceptually closer to human vision, but human perception is not what this check
@@ -28,6 +38,7 @@
 // simpler than adapting to that shape for a handful of lines of arithmetic.
 
 import type {
+	CaptureQualityDetectedMarker,
 	CaptureQualityFrameSample,
 	CaptureQualityIssueCode,
 	CaptureQualityIssueDetails,
@@ -35,11 +46,12 @@ import type {
 	CaptureQualityPreCheckResult,
 	CaptureQualitySeverity,
 } from "./types";
-import { DEFAULTS, LIGHTING_GRID } from "./captureQualityConfig";
-import type { CaptureQualityConfig, LightingGrid, LightingThresholds } from "./captureQualityConfig";
+import { DEFAULTS, LIGHTING_GRID, LIGHTING_ROI } from "./captureQualityConfig";
+import type { CaptureQualityConfig, LightingGrid, LightingRoiConfig, LightingRoiRect, LightingThresholds } from "./captureQualityConfig";
 
 export interface LowLightCheckConfig {
 	grid: LightingGrid;
+	roi: LightingRoiConfig;
 	thresholds: LightingThresholds;
 	/** Same field as CaptureQualityConfig.sampling.liveWindowRecencyWeight - see markerBoardCheck.ts's MarkerBoardCheckConfig for the identical convention. */
 	liveWindowRecencyWeight: number;
@@ -48,9 +60,77 @@ export interface LowLightCheckConfig {
 export function defaultLowLightCheckConfig(config: CaptureQualityConfig = DEFAULTS): LowLightCheckConfig {
 	return {
 		grid: LIGHTING_GRID,
+		roi: LIGHTING_ROI,
 		thresholds: config.lighting,
 		liveWindowRecencyWeight: config.sampling.liveWindowRecencyWeight,
 	};
+}
+
+/** Which of the three ROI selection paths (see module header) produced a given reading. */
+export type LowLightRoiSource = "detected" | "last-known" | "default";
+
+export interface LowLightRoiResult {
+	roi: LightingRoiRect;
+	source: LowLightRoiSource;
+}
+
+function clamp01(value: number): number {
+	return Math.max(0, Math.min(1, value));
+}
+
+/** Padded bounding box of every detected marker corner, normalized. Returns null when there is nothing to compute a bbox from, rather than a fabricated zero-size rect. */
+function computeDetectedRoi(
+	markers: readonly CaptureQualityDetectedMarker[] | null,
+	frameWidth: number,
+	frameHeight: number,
+	config: LowLightCheckConfig
+): LightingRoiRect | null {
+	if (!markers || markers.length === 0 || !(frameWidth > 0) || !(frameHeight > 0)) return null;
+	let minX = Infinity;
+	let maxX = -Infinity;
+	let minY = Infinity;
+	let maxY = -Infinity;
+	let any = false;
+	for (const marker of markers) {
+		for (const corner of marker.corners) {
+			any = true;
+			if (corner.x < minX) minX = corner.x;
+			if (corner.x > maxX) maxX = corner.x;
+			if (corner.y < minY) minY = corner.y;
+			if (corner.y > maxY) maxY = corner.y;
+		}
+	}
+	if (!any) return null;
+
+	const bboxWidthNorm = (maxX - minX) / frameWidth;
+	const bboxHeightNorm = (maxY - minY) / frameHeight;
+	const padX = Math.max(bboxWidthNorm * config.roi.marginFrac, config.roi.minMarginNorm);
+	const padY = Math.max(bboxHeightNorm * config.roi.marginFrac, config.roi.minMarginNorm);
+	const x0 = clamp01(minX / frameWidth - padX);
+	const y0 = clamp01(minY / frameHeight - padY);
+	const x1 = clamp01(maxX / frameWidth + padX);
+	const y1 = clamp01(maxY / frameHeight + padY);
+	return { xNorm: x0, yNorm: y0, widthNorm: Math.max(0, x1 - x0), heightNorm: Math.max(0, y1 - y0) };
+}
+
+/**
+ * Resolves the ROI for the NEWEST frame in `frames` (oldest first), per the three-path
+ * order in the module header. Path 2 scans backward through the same bounded window
+ * rather than tracking a separate value, so it decays to path 3 on its own once every
+ * frame in the window has gone marker-less.
+ */
+export function resolveLowLightRoi(frames: readonly CaptureQualityFrameSample[], config: LowLightCheckConfig): LowLightRoiResult {
+	if (frames.length > 0) {
+		const current = frames[frames.length - 1];
+		const detected = computeDetectedRoi(current.markers, current.frameWidth, current.frameHeight, config);
+		if (detected) return { roi: detected, source: "detected" };
+		for (let i = frames.length - 2; i >= 0; i--) {
+			const past = frames[i];
+			const roi = computeDetectedRoi(past.markers, past.frameWidth, past.frameHeight, config);
+			if (roi) return { roi, source: "last-known" };
+		}
+	}
+	return { roi: config.roi.defaultRoi, source: "default" };
 }
 
 export interface LowLightFrameMetrics {
@@ -93,22 +173,35 @@ function luma(data: Uint8ClampedArray, pixelIndex: number): number {
 }
 
 /**
- * Per-frame evaluation: divides frame.imageData into config.grid.cols x config.grid.rows
- * cells and computes mean luma / luma standard deviation (the simple, cheap local-contrast
- * measure - see module header for why std rather than Michelson contrast) per cell. Never
- * throws; a cell with no sampled pixels (degenerate frame size) is left null rather than
- * fabricated as 0, matching evaluateMarkerBoardFrame's convention.
+ * Divides the ROI into a cols x rows grid and computes mean luma / luma standard
+ * deviation per cell. Never throws; a cell below config.grid.minPixelsPerCell is left
+ * null rather than fabricated as an unstably-noisy estimate, matching
+ * evaluateMarkerBoardFrame's convention.
  */
-export function evaluateLowLightFrame(frame: CaptureQualityFrameSample, config: LowLightCheckConfig): LowLightFrameMetrics {
+export function evaluateLowLightFrame(
+	frame: CaptureQualityFrameSample,
+	config: LowLightCheckConfig,
+	roi: LightingRoiRect = config.roi.defaultRoi
+): LowLightFrameMetrics {
 	const image = frame.imageData;
-	const { cols, rows, cellSampleStride } = config.grid;
+	const { cols, rows, cellSampleStride, minPixelsPerCell } = config.grid;
 	const cellCount = cols * rows;
 	if (!image || image.width <= 0 || image.height <= 0 || cols <= 0 || rows <= 0) {
 		return { ...EMPTY_METRICS, cellCount };
 	}
 
-	const cellW = image.width / cols;
-	const cellH = image.height / rows;
+	// The ROI may have been resolved from a different frame (last-known/default paths), so
+	// clamp to THIS frame's pixel bounds rather than trusting resolution-time clamping.
+	const roiX = clamp01(roi.xNorm) * image.width;
+	const roiY = clamp01(roi.yNorm) * image.height;
+	const roiW = Math.max(0, Math.min(clamp01(roi.widthNorm) * image.width, image.width - roiX));
+	const roiH = Math.max(0, Math.min(clamp01(roi.heightNorm) * image.height, image.height - roiY));
+	if (roiW <= 0 || roiH <= 0) {
+		return { ...EMPTY_METRICS, cellCount };
+	}
+
+	const cellW = roiW / cols;
+	const cellH = roiH / rows;
 	const stride = Math.max(1, Math.floor(cellSampleStride));
 	const data = image.data;
 
@@ -122,11 +215,11 @@ export function evaluateLowLightFrame(frame: CaptureQualityFrameSample, config: 
 	let contrastSum = 0;
 
 	for (let row = 0; row < rows; row++) {
-		const yStart = Math.floor(row * cellH);
-		const yEnd = Math.max(yStart + 1, Math.floor((row + 1) * cellH));
+		const yStart = Math.floor(roiY + row * cellH);
+		const yEnd = Math.max(yStart + 1, Math.floor(roiY + (row + 1) * cellH));
 		for (let col = 0; col < cols; col++) {
-			const xStart = Math.floor(col * cellW);
-			const xEnd = Math.max(xStart + 1, Math.floor((col + 1) * cellW));
+			const xStart = Math.floor(roiX + col * cellW);
+			const xEnd = Math.max(xStart + 1, Math.floor(roiX + (col + 1) * cellW));
 
 			let sum = 0;
 			let sumSq = 0;
@@ -142,13 +235,11 @@ export function evaluateLowLightFrame(frame: CaptureQualityFrameSample, config: 
 			}
 
 			const cellIndex = row * cols + col;
-			if (n === 0) continue;
+			if (n < minPixelsPerCell) continue;
 
 			const mean = sum / n;
-			// Population variance from sum/sumSq is numerically fine here: at the caller's
-			// ~128x72 lighting canvas (RealTimeProcessor.tsx) an 8x8 grid gives n on the
-			// order of 100-150 samples per cell, and luma is bounded [0,255], so
-			// cancellation error is negligible - a Welford pass would be overkill.
+			// Population variance from sum/sumSq is fine here: n is >= minPixelsPerCell and
+			// luma is bounded [0,255], so cancellation error is negligible.
 			const variance = Math.max(0, sumSq / n - mean * mean);
 			const std = Math.sqrt(variance);
 
@@ -178,22 +269,45 @@ export function evaluateLowLightFrame(frame: CaptureQualityFrameSample, config: 
 	};
 }
 
+/** Per-signal "is this currently firing" memory, mirroring MarkerBoardHysteresisState: a fraction sitting near a single fixed threshold oscillates with ordinary noise, which window smoothing alone does not remove. */
+export interface LowLightHysteresisState {
+	lowLightBad: boolean;
+	lowContrastBad: boolean;
+}
+
+export function createLowLightHysteresisState(): LowLightHysteresisState {
+	return { lowLightBad: false, lowContrastBad: false };
+}
+
+export function resetLowLightHysteresisState(state: LowLightHysteresisState): void {
+	state.lowLightBad = false;
+	state.lowContrastBad = false;
+}
+
 /**
- * Caller-owned bounded ring buffer of raw frame samples, mirroring
- * MarkerBoardFrameWindow. Deliberately a SEPARATE window from the marker-board one (not
- * a shared CaptureQualityFrameSample stream) because this one DOES carry ImageData - the
- * small dedicated lighting canvas (~128x72, see RealTimeProcessor.tsx), not the
- * full-resolution detector canvas, so a live-window's worth of frames (default 15) stays
- * well under a megabyte rather than reproducing the sampler.ts unbounded full-res buffer
- * problem this whole design already fixed once for markers.
+ * One hysteresis step. Duplicated from markerBoardCheck.ts rather than imported - each
+ * check module stays independently portable by plain copy. Both lighting signals run
+ * "above" direction: a higher fraction is worse, so `clearLevel` sits below `warnLevel`.
+ */
+function applyHysteresis(state: boolean, value: number | null, warnLevel: number, clearLevel: number): boolean {
+	if (value === null) return state;
+	return state ? value >= clearLevel : value > warnLevel;
+}
+
+/**
+ * Caller-owned bounded ring buffer. Separate from the marker-board window because this
+ * one carries ImageData, from the small lighting canvas rather than the full-resolution
+ * detector one, so a window's worth stays well under a megabyte. Also doubles as the
+ * buffer resolveLowLightRoi's path 2 scans.
  */
 export interface LowLightFrameWindow {
 	readonly maxFrames: number;
 	frames: CaptureQualityFrameSample[];
+	hysteresis: LowLightHysteresisState;
 }
 
 export function createLowLightFrameWindow(maxFrames: number): LowLightFrameWindow {
-	return { maxFrames: Math.max(1, Math.floor(maxFrames)), frames: [] };
+	return { maxFrames: Math.max(1, Math.floor(maxFrames)), frames: [], hysteresis: createLowLightHysteresisState() };
 }
 
 export function pushLowLightFrame(window: LowLightFrameWindow, frame: CaptureQualityFrameSample): void {
@@ -205,6 +319,7 @@ export function pushLowLightFrame(window: LowLightFrameWindow, frame: CaptureQua
 
 export function resetLowLightFrameWindow(window: LowLightFrameWindow): void {
 	window.frames.length = 0;
+	resetLowLightHysteresisState(window.hysteresis);
 }
 
 export interface LowLightWindowAggregate {
@@ -215,32 +330,39 @@ export interface LowLightWindowAggregate {
 	weightedFlatCellFraction: number | null;
 	/** Metrics for the newest frame in the window, for a responsive (non-averaged) readout. */
 	latest: LowLightFrameMetrics | null;
+	/** ROI resolved for the newest frame - see resolveLowLightRoi. Null only for an empty window (no frames evaluated yet). */
+	latestRoi: LightingRoiRect | null;
+	/** Which of the three selection paths produced latestRoi. Null only for an empty window. */
+	latestRoiSource: LowLightRoiSource | null;
 	/** Codes currently firing. LOW_LIGHT and LOW_CONTRAST are independent (a covered lens is both at once), unlike the marker-board codes, so both may be present. */
 	activeCodes: readonly CaptureQualityIssueCode[];
 }
 
+const EMPTY_AGGREGATE: LowLightWindowAggregate = {
+	frameCount: 0,
+	weightedMeanLuma: null,
+	weightedDarkCellFraction: null,
+	weightedMeanContrastStd: null,
+	weightedFlatCellFraction: null,
+	latest: null,
+	latestRoi: null,
+	latestRoiSource: null,
+	activeCodes: [],
+};
+
 /**
- * Aggregates a sequence of already-computed per-frame metrics (oldest to newest) with an
- * EWMA, alpha = liveWindowRecencyWeight - identical convention to
- * aggregateMarkerBoardMetrics in markerBoardCheck.ts. Factored out from
- * evaluateLowLightWindowAggregate for the same reason that function is factored out
- * there: an offline replay tool (scripts/calibrate) can drive this exact aggregation
- * without needing raw pixels, only the derived per-frame scalars a recording carries.
+ * EWMA over already-computed per-frame metrics (oldest to newest). Split from
+ * evaluateLowLightWindowAggregate so the offline replay tool can drive it from a
+ * recording's derived scalars without raw pixels. `hysteresis` defaults to a fresh state
+ * for ad hoc callers; a live caller passes its window's own for cross-call memory.
  */
 export function aggregateLowLightMetrics(
 	metricsSequence: readonly LowLightFrameMetrics[],
-	config: LowLightCheckConfig
+	config: LowLightCheckConfig,
+	hysteresis: LowLightHysteresisState = createLowLightHysteresisState()
 ): LowLightWindowAggregate {
 	if (metricsSequence.length === 0) {
-		return {
-			frameCount: 0,
-			weightedMeanLuma: null,
-			weightedDarkCellFraction: null,
-			weightedMeanContrastStd: null,
-			weightedFlatCellFraction: null,
-			latest: null,
-			activeCodes: [],
-		};
+		return EMPTY_AGGREGATE;
 	}
 
 	const alpha = config.liveWindowRecencyWeight;
@@ -264,12 +386,20 @@ export function aggregateLowLightMetrics(
 	}
 
 	const activeCodes: CaptureQualityIssueCode[] = [];
-	if (darkCellFraction !== null && darkCellFraction >= config.thresholds.darkCellFractionThreshold) {
-		activeCodes.push("LOW_LIGHT");
-	}
-	if (flatCellFraction !== null && flatCellFraction >= config.thresholds.flatCellFractionThreshold) {
-		activeCodes.push("LOW_CONTRAST");
-	}
+	hysteresis.lowLightBad = applyHysteresis(
+		hysteresis.lowLightBad,
+		darkCellFraction,
+		config.thresholds.darkCellFractionThreshold,
+		config.thresholds.darkCellFractionClearThreshold
+	);
+	if (hysteresis.lowLightBad) activeCodes.push("LOW_LIGHT");
+	hysteresis.lowContrastBad = applyHysteresis(
+		hysteresis.lowContrastBad,
+		flatCellFraction,
+		config.thresholds.flatCellFractionThreshold,
+		config.thresholds.flatCellFractionClearThreshold
+	);
+	if (hysteresis.lowContrastBad) activeCodes.push("LOW_CONTRAST");
 
 	return {
 		frameCount: metricsSequence.length,
@@ -278,19 +408,56 @@ export function aggregateLowLightMetrics(
 		weightedMeanContrastStd: meanContrastStd,
 		weightedFlatCellFraction: flatCellFraction,
 		latest,
+		latestRoi: null,
+		latestRoiSource: null,
 		activeCodes,
 	};
 }
 
-/** The live/on-device entry point: computes per-frame metrics from raw frame samples, then delegates to aggregateLowLightMetrics. */
+/**
+ * Live entry point. Resolves the ROI for each frame separately, not just the newest,
+ * since path 2 looks back from wherever it is evaluated and an older frame's correct ROI
+ * can differ. The resulting O(n^2) scan is trivial at the window's bounded size.
+ */
 export function evaluateLowLightWindowAggregate(
 	frames: readonly CaptureQualityFrameSample[],
-	config: LowLightCheckConfig
+	config: LowLightCheckConfig,
+	hysteresis?: LowLightHysteresisState
 ): LowLightWindowAggregate {
-	return aggregateLowLightMetrics(
-		frames.map((frame) => evaluateLowLightFrame(frame, config)),
-		config
-	);
+	if (frames.length === 0) return EMPTY_AGGREGATE;
+
+	const metricsSequence: LowLightFrameMetrics[] = [];
+	let latestRoi: LightingRoiRect = config.roi.defaultRoi;
+	let latestRoiSource: LowLightRoiSource = "default";
+	for (let i = 0; i < frames.length; i++) {
+		const resolved = resolveLowLightRoi(frames.slice(0, i + 1), config);
+		metricsSequence.push(evaluateLowLightFrame(frames[i], config, resolved.roi));
+		latestRoi = resolved.roi;
+		latestRoiSource = resolved.source;
+	}
+
+	const aggregate = aggregateLowLightMetrics(metricsSequence, config, hysteresis);
+	return { ...aggregate, latestRoi, latestRoiSource };
+}
+
+export interface LowLightFrameEvaluation {
+	metrics: LowLightFrameMetrics;
+	roi: LightingRoiRect;
+	roiSource: LowLightRoiSource;
+}
+
+/**
+ * Single-tick entry point: evaluates only the newest frame, using the rest of the window
+ * for the last-known fallback path. Cheaper than evaluateLowLightWindowAggregate when a
+ * caller needs this tick's reading rather than the whole window's EWMA.
+ */
+export function evaluateLatestLowLightFrame(
+	frames: readonly CaptureQualityFrameSample[],
+	config: LowLightCheckConfig
+): LowLightFrameEvaluation | null {
+	if (frames.length === 0) return null;
+	const { roi, source } = resolveLowLightRoi(frames, config);
+	return { metrics: evaluateLowLightFrame(frames[frames.length - 1], config, roi), roi, roiSource: source };
 }
 
 const INDICATOR_BY_CODE: Record<"LOW_LIGHT" | "LOW_CONTRAST", { severity: CaptureQualitySeverity; state: CaptureQualityLiveIndicatorState }> = {
@@ -317,6 +484,17 @@ export function evaluateLowLightWindow(
 		if (aggregate.latest.darkCellFraction !== null) details.latestDarkCellFraction = aggregate.latest.darkCellFraction;
 		if (aggregate.latest.meanContrastStd !== null) details.latestMeanContrastStd = aggregate.latest.meanContrastStd;
 		if (aggregate.latest.flatCellFraction !== null) details.latestFlatCellFraction = aggregate.latest.flatCellFraction;
+	}
+	if (aggregate.latestRoi) {
+		details.latestRoiXNorm = aggregate.latestRoi.xNorm;
+		details.latestRoiYNorm = aggregate.latestRoi.yNorm;
+		details.latestRoiWidthNorm = aggregate.latestRoi.widthNorm;
+		details.latestRoiHeightNorm = aggregate.latestRoi.heightNorm;
+	}
+	if (aggregate.latestRoiSource) {
+		details.latestRoiDetected = aggregate.latestRoiSource === "detected";
+		details.latestRoiLastKnown = aggregate.latestRoiSource === "last-known";
+		details.latestRoiDefault = aggregate.latestRoiSource === "default";
 	}
 
 	return aggregate.activeCodes.map((code) => {

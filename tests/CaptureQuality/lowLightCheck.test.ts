@@ -3,22 +3,35 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DEFAULTS } from "../../src/CaptureQuality/captureQualityConfig";
-import type { CaptureQualityFrameSample } from "../../src/CaptureQuality/types";
+import type { LightingRoiRect } from "../../src/CaptureQuality/captureQualityConfig";
+import type { CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "../../src/CaptureQuality/types";
 import {
 	aggregateLowLightMetrics,
 	createLowLightFrameWindow,
+	createLowLightHysteresisState,
 	defaultLowLightCheckConfig,
 	evaluateLowLightFrame,
 	evaluateLowLightWindow,
 	evaluateLowLightWindowAggregate,
 	pushLowLightFrame,
 	resetLowLightFrameWindow,
+	resolveLowLightRoi,
 } from "../../src/CaptureQuality/lowLightCheck";
+import type { LowLightFrameMetrics } from "../../src/CaptureQuality/lowLightCheck";
 import { parseCompactExportFile } from "../../scripts/calibrate/parse";
+import { defaultMarkerBoardCheckConfig } from "../../src/CaptureQuality/markerBoardCheck";
+import { replayRecording } from "../../scripts/calibrate/replay";
 
-const WIDTH = 128;
-const HEIGHT = 72;
+const WIDTH = 200;
+const HEIGHT = 200;
 const config = defaultLowLightCheckConfig(DEFAULTS);
+const FULL_FRAME_ROI: LightingRoiRect = { xNorm: 0, yNorm: 0, widthNorm: 1, heightNorm: 1 };
+
+// The "board" occupies the middle third of the frame in both axes - far from the edges,
+// so a resolved ROI (padded outward from this rect) never clips against the frame
+// boundary in a way that would confound the "does the ROI actually isolate the board"
+// assertions below.
+const BOARD_RECT = { xNorm: 1 / 3, yNorm: 1 / 3, widthNorm: 1 / 3, heightNorm: 1 / 3 };
 
 // jsdom (the test environment - see vitest.config.ts) does not implement the ImageData
 // constructor, so fixtures build the same {data, width, height} shape by hand rather than
@@ -38,27 +51,52 @@ function makeImageData(width: number, height: number, pixel: (x: number, y: numb
 	return { data, width, height } as ImageData;
 }
 
-function frameFor(imageData: ImageData | null): CaptureQualityFrameSample {
+function frameFor(imageData: ImageData | null, markers: CaptureQualityDetectedMarker[] | null = null): CaptureQualityFrameSample {
 	return {
 		imageData,
 		timestampMs: 0,
 		frameWidth: imageData?.width ?? WIDTH,
 		frameHeight: imageData?.height ?? HEIGHT,
 		people: null,
-		markers: null,
+		markers,
 	};
 }
 
-// Deterministic per-pixel "texture" (not a flat fill) so a bright/dark frame isn't ALSO
+function markerAt(id: number, rect: { xNorm: number; yNorm: number; widthNorm: number; heightNorm: number }): CaptureQualityDetectedMarker {
+	const x0 = rect.xNorm * WIDTH;
+	const y0 = rect.yNorm * HEIGHT;
+	const x1 = (rect.xNorm + rect.widthNorm) * WIDTH;
+	const y1 = (rect.yNorm + rect.heightNorm) * HEIGHT;
+	return {
+		id,
+		corners: [
+			{ x: x0, y: y0 },
+			{ x: x1, y: y0 },
+			{ x: x1, y: y1 },
+			{ x: x0, y: y1 },
+		],
+	};
+}
+
+// Deterministic per-pixel "texture" (not a flat fill) so a bright/dark region isn't ALSO
 // a flat/washed one by construction - real scenes have local variation, and this keeps
 // the LOW_LIGHT and LOW_CONTRAST fixtures below from conflating the two failure modes.
 function textured(base: number, amplitude: number, x: number, y: number): number {
 	return base + amplitude * Math.sin(x * 0.9) * Math.cos(y * 0.7);
 }
 
+/** Builds a WIDTH x HEIGHT image with BOARD_RECT painted by `board` and everywhere else painted by `background`. */
+function boardVsBackgroundImage(board: (x: number, y: number) => number, background: (x: number, y: number) => number): ImageData {
+	const x0 = BOARD_RECT.xNorm * WIDTH;
+	const y0 = BOARD_RECT.yNorm * HEIGHT;
+	const x1 = x0 + BOARD_RECT.widthNorm * WIDTH;
+	const y1 = y0 + BOARD_RECT.heightNorm * HEIGHT;
+	return makeImageData(WIDTH, HEIGHT, (x, y) => (x >= x0 && x < x1 && y >= y0 && y < y1 ? board(x, y) : background(x, y)));
+}
+
 describe("evaluateLowLightFrame", () => {
 	it("returns an empty-metrics result rather than crashing when imageData is null", () => {
-		const metrics = evaluateLowLightFrame(frameFor(null), config);
+		const metrics = evaluateLowLightFrame(frameFor(null), config, FULL_FRAME_ROI);
 		expect(metrics.computableCellCount).toBe(0);
 		expect(metrics.meanLuma).toBeNull();
 		expect(metrics.darkCellFraction).toBeNull();
@@ -68,80 +106,197 @@ describe("evaluateLowLightFrame", () => {
 
 	it("computes cellCount = grid.cols * grid.rows for a normally-sized frame", () => {
 		const image = makeImageData(WIDTH, HEIGHT, (x, y) => textured(200, 20, x, y));
-		const metrics = evaluateLowLightFrame(frameFor(image), config);
+		const metrics = evaluateLowLightFrame(frameFor(image), config, FULL_FRAME_ROI);
 		expect(metrics.cellCount).toBe(config.grid.cols * config.grid.rows);
 		expect(metrics.computableCellCount).toBe(config.grid.cols * config.grid.rows);
 	});
+
+	it("defaults to config.roi.defaultRoi when no roi argument is supplied", () => {
+		const image = makeImageData(WIDTH, HEIGHT, (x, y) => textured(200, 20, x, y));
+		const withDefault = evaluateLowLightFrame(frameFor(image), config);
+		const withExplicitDefault = evaluateLowLightFrame(frameFor(image), config, config.roi.defaultRoi);
+		expect(withDefault).toEqual(withExplicitDefault);
+	});
 });
 
-describe("evaluateLowLightWindow - the four required scenarios", () => {
-	it("a uniformly bright, textured frame passes clean (no LOW_LIGHT, no LOW_CONTRAST)", () => {
-		const image = makeImageData(WIDTH, HEIGHT, (x, y) => textured(210, 25, x, y));
-		const results = evaluateLowLightWindow([frameFor(image)], config);
+describe("ROI scoping - the false-positive fix", () => {
+	it("a bright, textured board (with any background) passes clean", () => {
+		const image = boardVsBackgroundImage(
+			(x, y) => textured(210, 25, x, y),
+			(x, y) => textured(210, 25, x, y)
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results).toEqual([]);
 	});
 
-	it("a uniformly dark frame trips LOW_LIGHT", () => {
-		// Textured but dark: mean luma well below cellDarkLumaMax on every cell, amplitude
-		// kept small enough that std stays above cellFlatContrastMax so this does not also
-		// fire LOW_CONTRAST - isolating that this scenario is specifically a lighting problem.
-		const image = makeImageData(WIDTH, HEIGHT, (x, y) => textured(30, 25, x, y));
-		const metrics = evaluateLowLightFrame(frameFor(image), config);
-		expect(metrics.darkCellFraction).toBe(1);
-		const results = evaluateLowLightWindow([frameFor(image)], config);
+	it("a dark board trips LOW_LIGHT even with a BRIGHT background - the whole point of ROI scoping", () => {
+		const image = boardVsBackgroundImage(
+			(x, y) => textured(30, 25, x, y), // dark, textured board
+			(x, y) => textured(220, 25, x, y) // bright background - a whole-frame check would average this away
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results.map((r) => r.code)).toContain("LOW_LIGHT");
-		expect(results.map((r) => r.code)).not.toContain("LOW_CONTRAST");
 	});
 
-	it("a flat/washed frame trips LOW_CONTRAST", () => {
-		// Bright (not dark) and perfectly uniform per cell: mean well above
-		// cellDarkLumaMax, std = 0 everywhere - a washed-out/overexposed scene, not a dark one.
-		const image = makeImageData(WIDTH, HEIGHT, () => 220);
-		const metrics = evaluateLowLightFrame(frameFor(image), config);
-		expect(metrics.flatCellFraction).toBe(1);
-		expect(metrics.darkCellFraction).toBe(0);
-		const results = evaluateLowLightWindow([frameFor(image)], config);
+	it("the inverse: a bright board with a DARK surrounding does NOT warn", () => {
+		const image = boardVsBackgroundImage(
+			(x, y) => textured(210, 25, x, y), // bright, textured board
+			(x, y) => textured(20, 5, x, y) // dark background - a whole-frame check could plausibly drag the mean down
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
+		expect(results).toEqual([]);
+	});
+
+	it("a flat/washed board trips LOW_CONTRAST regardless of a differently-textured background", () => {
+		const image = boardVsBackgroundImage(
+			() => 220, // perfectly flat, bright board
+			(x, y) => textured(120, 40, x, y) // ordinary textured background
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results.map((r) => r.code)).toContain("LOW_CONTRAST");
 		expect(results.map((r) => r.code)).not.toContain("LOW_LIGHT");
 	});
 
-	it("a localized dark patch stays localized to the cells it covers, not the whole frame - the case that justifies a grid over a single whole-frame statistic", () => {
-		const cols = config.grid.cols;
-		const rows = config.grid.rows;
-		const cellW = WIDTH / cols;
-		const cellH = HEIGHT / rows;
-		// Cell (0,0) is fully dark and flat; every other cell is bright and textured.
+	it("reproduces the reported bug: blank wall/floor/ceiling cells far outside the board no longer count toward LOW_CONTRAST", () => {
+		// Flat wall/floor/ceiling only in the outer ring, well outside the padded ROI,
+		// while the board and its immediate surroundings stay textured - the shape of the
+		// real false-positive recording, where the flat cells were distant wall rather
+		// than board-adjacent floor.
 		const image = makeImageData(WIDTH, HEIGHT, (x, y) => {
-			if (x < cellW && y < cellH) return 5;
-			return textured(210, 25, x, y);
+			const xNorm = x / WIDTH;
+			const yNorm = y / HEIGHT;
+			const farFromBoard = xNorm < 0.1 || xNorm > 0.9 || yNorm < 0.1 || yNorm > 0.9;
+			return farFromBoard ? 200 : textured(180, 30, x, y);
 		});
-		const metrics = evaluateLowLightFrame(frameFor(image), config);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
+		expect(results).toEqual([]);
+	});
+});
 
-		// Exactly one of cols*rows cells reads dark - a single shadowed corner, not a dark room.
-		expect(metrics.darkCellFraction).toBeCloseTo(1 / (cols * rows), 5);
-		// A single dark cell is not remotely close to the fraction-of-cells threshold, so it
-		// must not fire LOW_LIGHT - a whole-frame MEAN luma check could plausibly have been
-		// dragged down further by one very dark cell than a per-cell fraction is, which is
-		// exactly the false-positive-on-a-shadow failure mode the grid avoids.
-		const results = evaluateLowLightWindow([frameFor(image)], config);
-		expect(results.map((r) => r.code)).not.toContain("LOW_LIGHT");
-		expect(results.map((r) => r.code)).not.toContain("LOW_CONTRAST");
+describe("resolveLowLightRoi - the three selection paths", () => {
+	it("path 1 (detected): uses this frame's own marker bounding box, padded", () => {
+		const frame = frameFor(makeImageData(WIDTH, HEIGHT, () => 128), [markerAt(0, BOARD_RECT)]);
+		const { roi, source } = resolveLowLightRoi([frame], config);
+		expect(source).toBe("detected");
+		// Padded outward from BOARD_RECT (marginFrac/minMarginNorm both push outward -
+		// see computeDetectedRoi), so the resolved box must fully contain BOARD_RECT.
+		expect(roi.xNorm).toBeLessThanOrEqual(BOARD_RECT.xNorm);
+		expect(roi.yNorm).toBeLessThanOrEqual(BOARD_RECT.yNorm);
+		expect(roi.xNorm + roi.widthNorm).toBeGreaterThanOrEqual(BOARD_RECT.xNorm + BOARD_RECT.widthNorm);
+		expect(roi.yNorm + roi.heightNorm).toBeGreaterThanOrEqual(BOARD_RECT.yNorm + BOARD_RECT.heightNorm);
+	});
+
+	it("path 2 (last-known): reuses the most recent detected ROI when the newest frame has no markers", () => {
+		const withMarkers = frameFor(makeImageData(WIDTH, HEIGHT, () => 128), [markerAt(0, BOARD_RECT)]);
+		const withoutMarkers = frameFor(makeImageData(WIDTH, HEIGHT, () => 128), null);
+		const { roi: detectedRoi } = resolveLowLightRoi([withMarkers], config);
+
+		const { roi, source } = resolveLowLightRoi([withMarkers, withoutMarkers, withoutMarkers], config);
+		expect(source).toBe("last-known");
+		expect(roi).toEqual(detectedRoi);
+	});
+
+	it("path 3 (default): falls back to config.roi.defaultRoi when no frame in the window has markers", () => {
+		const withoutMarkers = frameFor(makeImageData(WIDTH, HEIGHT, () => 128), null);
+		const { roi, source } = resolveLowLightRoi([withoutMarkers, withoutMarkers], config);
+		expect(source).toBe("default");
+		expect(roi).toEqual(config.roi.defaultRoi);
+	});
+
+	it("path 3 also covers an empty window (nothing evaluated yet, e.g. a dark room with no detection ever)", () => {
+		const { roi, source } = resolveLowLightRoi([], config);
+		expect(source).toBe("default");
+		expect(roi).toEqual(config.roi.defaultRoi);
+	});
+
+	it("falls back correctly when markers vanish mid-window: last-known while the detection is still in the bounded window, default once it rolls out", () => {
+		const window = createLowLightFrameWindow(3);
+		const withMarkers = frameFor(makeImageData(WIDTH, HEIGHT, () => 128), [markerAt(0, BOARD_RECT)]);
+		const withoutMarkers = frameFor(makeImageData(WIDTH, HEIGHT, () => 128), null);
+
+		pushLowLightFrame(window, withMarkers);
+		expect(resolveLowLightRoi(window.frames, config).source).toBe("detected");
+
+		pushLowLightFrame(window, withoutMarkers);
+		expect(resolveLowLightRoi(window.frames, config).source).toBe("last-known");
+
+		pushLowLightFrame(window, withoutMarkers);
+		// window.maxFrames = 3, and this is the 3rd push - the original detection is still
+		// the oldest frame in the window, so it must still be reachable.
+		expect(resolveLowLightRoi(window.frames, config).source).toBe("last-known");
+
+		pushLowLightFrame(window, withoutMarkers);
+		// 4th push evicts the original detected frame (bounded ring buffer) - no frame in
+		// the window has ever seen a marker anymore, so this must decay to default.
+		expect(resolveLowLightRoi(window.frames, config).source).toBe("default");
+	});
+});
+
+describe("hysteresis (LOW_LIGHT/LOW_CONTRAST)", () => {
+	function metricsWithFractions(darkCellFraction: number, flatCellFraction: number): LowLightFrameMetrics {
+		return {
+			cellCount: 16,
+			computableCellCount: 16,
+			meanLuma: 100,
+			darkCellFraction,
+			meanContrastStd: 20,
+			flatCellFraction,
+		} as LowLightFrameMetrics;
+	}
+
+	it("holds LOW_LIGHT active between the warn and clear thresholds instead of flapping on noise, and clears only below the clear threshold", () => {
+		const hysteresis = createLowLightHysteresisState();
+		const warn = config.thresholds.darkCellFractionThreshold;
+		const clear = config.thresholds.darkCellFractionClearThreshold;
+		expect(clear).toBeLessThan(warn);
+
+		// Crosses warn -> becomes bad.
+		let agg = aggregateLowLightMetrics([metricsWithFractions(warn + 0.05, 0)], config, hysteresis);
+		expect(agg.activeCodes).toContain("LOW_LIGHT");
+
+		// Drops below warn but stays above clear - must still read as bad (this is exactly
+		// the noise band a bare threshold comparison would flap on).
+		const between = (warn + clear) / 2;
+		agg = aggregateLowLightMetrics([metricsWithFractions(between, 0)], config, hysteresis);
+		expect(agg.activeCodes).toContain("LOW_LIGHT");
+
+		// Drops to/below clear - now it clears.
+		agg = aggregateLowLightMetrics([metricsWithFractions(clear - 0.02, 0)], config, hysteresis);
+		expect(agg.activeCodes).not.toContain("LOW_LIGHT");
+	});
+
+	it("does the same for LOW_CONTRAST independently of LOW_LIGHT", () => {
+		const hysteresis = createLowLightHysteresisState();
+		const warn = config.thresholds.flatCellFractionThreshold;
+		const clear = config.thresholds.flatCellFractionClearThreshold;
+
+		let agg = aggregateLowLightMetrics([metricsWithFractions(0, warn + 0.05)], config, hysteresis);
+		expect(agg.activeCodes).toContain("LOW_CONTRAST");
+		expect(agg.activeCodes).not.toContain("LOW_LIGHT");
+
+		agg = aggregateLowLightMetrics([metricsWithFractions(0, (warn + clear) / 2)], config, hysteresis);
+		expect(agg.activeCodes).toContain("LOW_CONTRAST");
+
+		agg = aggregateLowLightMetrics([metricsWithFractions(0, clear - 0.02)], config, hysteresis);
+		expect(agg.activeCodes).not.toContain("LOW_CONTRAST");
 	});
 });
 
 describe("window reset", () => {
-	it("clears prior frames so a new trial does not inherit a previous trial's lighting state", () => {
+	it("clears prior frames AND hysteresis so a new trial does not inherit a previous trial's lighting state", () => {
 		const window = createLowLightFrameWindow(DEFAULTS.sampling.liveWindowFrameCount);
 		const dark = frameFor(makeImageData(WIDTH, HEIGHT, (x, y) => textured(30, 25, x, y)));
 		for (let i = 0; i < 5; i++) pushLowLightFrame(window, dark);
-		expect(evaluateLowLightWindowAggregate(window.frames, config).activeCodes).toContain("LOW_LIGHT");
+		expect(evaluateLowLightWindowAggregate(window.frames, config, window.hysteresis).activeCodes).toContain("LOW_LIGHT");
 
 		resetLowLightFrameWindow(window);
 		expect(window.frames).toHaveLength(0);
+		expect(window.hysteresis.lowLightBad).toBe(false);
+		expect(window.hysteresis.lowContrastBad).toBe(false);
 
 		const bright = frameFor(makeImageData(WIDTH, HEIGHT, (x, y) => textured(210, 25, x, y)));
 		pushLowLightFrame(window, bright);
-		const aggregate = evaluateLowLightWindowAggregate(window.frames, config);
+		const aggregate = evaluateLowLightWindowAggregate(window.frames, config, window.hysteresis);
 		expect(aggregate.frameCount).toBe(1);
 		expect(aggregate.activeCodes).not.toContain("LOW_LIGHT");
 	});
@@ -157,19 +312,30 @@ describe("aggregateLowLightMetrics", () => {
 			weightedMeanContrastStd: null,
 			weightedFlatCellFraction: null,
 			latest: null,
+			latestRoi: null,
+			latestRoiSource: null,
 			activeCodes: [],
 		});
 	});
 
 	it("carries a metric forward unchanged on a frame where it is not computable, rather than pulling the EWMA toward a fabricated value", () => {
-		const bright = evaluateLowLightFrame(frameFor(makeImageData(WIDTH, HEIGHT, (x, y) => textured(210, 25, x, y))), config);
-		const empty = evaluateLowLightFrame(frameFor(null), config);
+		const bright = evaluateLowLightFrame(frameFor(makeImageData(WIDTH, HEIGHT, (x, y) => textured(210, 25, x, y))), config, FULL_FRAME_ROI);
+		const empty = evaluateLowLightFrame(frameFor(null), config, FULL_FRAME_ROI);
 		const aggregate = aggregateLowLightMetrics([bright, empty], config);
 		expect(aggregate.weightedMeanLuma).toBe(bright.meanLuma);
 	});
 });
 
-describe("CQ1 export lines still parse under the extended (CQ1/CQ2) parser", () => {
+describe("evaluateLowLightWindowAggregate - latestRoi/latestRoiSource", () => {
+	it("reports the ROI and source used for the newest frame", () => {
+		const frame = frameFor(makeImageData(WIDTH, HEIGHT, () => 150), [markerAt(0, BOARD_RECT)]);
+		const aggregate = evaluateLowLightWindowAggregate([frame], config);
+		expect(aggregate.latestRoiSource).toBe("detected");
+		expect(aggregate.latestRoi).not.toBeNull();
+	});
+});
+
+describe("CQ1 export lines still parse under the extended (CQ1/CQ2/CQ3) parser", () => {
 	const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures/sample-recording.cq1.txt");
 
 	it("parses a CQ1 line as formatVersion 1 with no lighting samples", () => {
@@ -177,6 +343,44 @@ describe("CQ1 export lines still parse under the extended (CQ1/CQ2) parser", () 
 		expect(recording.formatVersion).toBe(1);
 		expect(recording.lightingSamples).toEqual([]);
 		expect(recording.lightingGrid).toBeNull();
+		expect(recording.lightingScope).toBe("none");
 		expect(recording.samples.every((s) => s.detArea === null)).toBe(true);
 	});
+});
+
+describe("the six committed CQ2 recordings - lighting data is historical (whole-frame), marker classifications are unaffected by the ROI change", () => {
+	const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+	// Pinned against markerBoardCheck.ts DEFAULTS. Re-pin if those legitimately change; a
+	// move caused by a lighting-only edit means the two modules have become coupled.
+	const EXPECTED: Record<string, string> = {
+		"2026-08-12-gait-d-3ft-cropped.cq2.txt": "MARKER_TOO_CLOSE",
+		"2026-08-12-gait-d-3p5ft-good.cq2.txt": "MARKER_TOO_LARGE",
+		"2026-08-13-gait-good-lighting-false-warn.cq2.txt": "OK",
+		"2026-08-13-gait-good-place-drift.cq2.txt": "OK",
+		"2026-08-13-gait-ideal-overlay-match.cq2.txt": "MARKER_INCOMPLETE",
+		"2026-08-13-gait-viable-range-sweep.cq2.txt": "MARKER_INCOMPLETE",
+	};
+
+	for (const [fileName, expectedLastState] of Object.entries(EXPECTED)) {
+		it(`${fileName} still parses as CQ2/whole-frame and replays to the same dominant marker state`, () => {
+			const path = join(REPO_ROOT, "calibration", fileName);
+			const [recording] = parseCompactExportFile(path, readFileSync(path, "utf8"));
+
+			expect(recording.formatVersion).toBe(2);
+			expect(recording.lightingSamples.length).toBeGreaterThan(0);
+			// The load-bearing assertion for this change: CQ2 lighting must be labeled
+			// whole-frame/historical, never mistaken for ROI-scoped CQ3 data.
+			expect(recording.lightingScope).toBe("whole-frame");
+			for (const sample of recording.lightingSamples) {
+				expect(sample.roi).toBeNull();
+				expect(sample.roiSource).toBeNull();
+			}
+
+			const markerConfig = defaultMarkerBoardCheckConfig(DEFAULTS);
+			const steps = replayRecording(recording, markerConfig, DEFAULTS.sampling.liveWindowFrameCount);
+			const last = steps[steps.length - 1];
+			const lastState = last.activeCodes.length === 0 ? "OK" : [...last.activeCodes].sort().join("+");
+			expect(lastState).toBe(expectedLastState);
+		});
+	}
 });

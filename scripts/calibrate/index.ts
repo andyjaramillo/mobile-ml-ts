@@ -53,22 +53,36 @@ function printRecordingStats(recording: ParsedCaptureRecording): void {
 	printLightingStats(recording);
 }
 
-/** Reports lighting distribution statistics per recording (spec section 5). CQ1 recordings and CQ2 recordings with no captured lighting samples both report "no lighting data" rather than throwing. */
+/** Reports lighting distribution statistics per recording (spec section 5), prefixed with the recording's lightingScope so whole-frame and ROI-scoped readings are never mistaken for the same measurement. */
 function printLightingStats(recording: ParsedCaptureRecording): void {
 	if (recording.lightingSamples.length === 0) {
-		console.log(`    lighting: no lighting samples (${recording.formatVersion === 1 ? "CQ1 recording - format predates lighting capture" : "CQ2 recording captured none"})`);
+		const reason = recording.formatVersion === 1 ? "CQ1 recording - format predates lighting capture" : `${recording.formatVersion === 2 ? "CQ2" : "CQ3"} recording captured none`;
+		console.log(`    lighting: no lighting samples (${reason})`);
 		return;
 	}
+	const scopeLabel =
+		recording.lightingScope === "whole-frame"
+			? "WHOLE-FRAME (CQ2, HISTORICAL - not comparable to ROI-scoped stats, see below)"
+			: "ROI-SCOPED (CQ3, board region only)";
 	const lumaMeans = recording.lightingSamples.map((s) => s.luma.mean);
 	const contrastMeans = recording.lightingSamples.map((s) => s.contrast.mean);
 	const lumaMins = recording.lightingSamples.map((s) => s.luma.min);
 	const lumaMaxes = recording.lightingSamples.map((s) => s.luma.max);
-	console.log(`    lighting: ${recording.lightingSamples.length} sample(s), grid=${recording.lightingGrid?.cols}x${recording.lightingGrid?.rows}`);
+	console.log(`    lighting [${scopeLabel}]: ${recording.lightingSamples.length} sample(s), grid=${recording.lightingGrid?.cols}x${recording.lightingGrid?.rows}`);
 	console.log(fmtStats("cellLumaMean    ", summarize(lumaMeans)));
 	console.log(fmtStats("cellContrastMean", summarize(contrastMeans)));
 	console.log(
 		`    cellLumaMean range across recording: overall_min=${Math.min(...lumaMins).toFixed(1)} overall_max=${Math.max(...lumaMaxes).toFixed(1)}`
 	);
+	if (recording.lightingScope === "roi") {
+		const sourceCounts = { detected: 0, "last-known": 0, default: 0 } as Record<string, number>;
+		for (const s of recording.lightingSamples) {
+			if (s.roiSource) sourceCounts[s.roiSource] = (sourceCounts[s.roiSource] ?? 0) + 1;
+		}
+		console.log(
+			`    ROI source mix: detected=${sourceCounts.detected} last-known=${sourceCounts["last-known"]} default=${sourceCounts.default}`
+		);
+	}
 }
 
 function writeSweepCsv(path: string, results: readonly ComboResult[]): void {
@@ -226,13 +240,29 @@ function main(): void {
 	console.log(`\n--- lowest-flap candidates (top ${TOP_N} of ${results.length}; low flap only, not validated against ground truth) ---`);
 	printComboTable(sortedByFlap.slice(0, TOP_N));
 
-	const lightingRecordings = recordings.filter((r) => r.lightingSamples.length > 0);
+	// Only ROI-scoped recordings feed the sweep; whole-frame ones would pool two different
+	// measurements into one candidate score.
+	const wholeFrameRecordings = recordings.filter((r) => r.lightingScope === "whole-frame");
+	const lightingRecordings = recordings.filter((r) => r.lightingScope === "roi");
+	if (wholeFrameRecordings.length > 0) {
+		console.log(
+			`\n--- ${wholeFrameRecordings.length} CQ2 (whole-frame) recording(s) with lighting data found: HISTORICAL ONLY ---\n` +
+				"  These predate the ROI-scoping fix (see lowLightCheck.ts's module header) and\n" +
+				"  measured luminance/contrast over the WHOLE frame, not the board region. Their\n" +
+				"  lighting stats are printed above per-recording but are EXCLUDED from the sweep\n" +
+				"  below - mixing them with CQ3's ROI-scoped stats would produce a meaningless\n" +
+				"  calibration. Their marker-geometry data is unaffected and still feeds the\n" +
+				"  marker-board sweep above.\n" +
+				`  (${wholeFrameRecordings.map((r) => r.sourceLabel).join(", ")})`
+		);
+	}
 	if (lightingRecordings.length === 0) {
 		console.log(
 			"\n--- lighting threshold sweep: SKIPPED ---\n" +
-				"  No CQ2 recording with lighting samples was found in the given file(s) (CQ1\n" +
-				"  recordings predate lighting capture). Re-record with the current HUD to get\n" +
-				"  CQ2 lighting data, then re-run this tool."
+				"  No CQ3 (ROI-scoped) recording with lighting samples was found in the given\n" +
+				"  file(s) (CQ1 predates lighting capture entirely; CQ2's lighting data is\n" +
+				"  whole-frame and historical-only - see above). Re-record with the current HUD\n" +
+				"  to get CQ3 lighting data, then re-run this tool."
 		);
 	} else {
 		const lightingWindowSize = DEFAULTS.sampling.liveWindowFrameCount;

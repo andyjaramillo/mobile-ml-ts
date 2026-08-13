@@ -3,7 +3,7 @@
 // replayLighting/aggregateLowLightMetrics instead. Kept as a separate file rather than
 // folded into sweep.ts: that file's own header says "Sweeps... four MarkerBoardThresholds"
 // and the task calls for keeping the existing marker sweep intact, not generalizing it.
-import { LIGHTING_GRID } from "../../src/CaptureQuality/captureQualityConfig";
+import { DEFAULTS, LIGHTING_GRID, LIGHTING_ROI } from "../../src/CaptureQuality/captureQualityConfig";
 import type { LightingThresholds } from "../../src/CaptureQuality/captureQualityConfig";
 import type { LowLightCheckConfig } from "../../src/CaptureQuality/lowLightCheck";
 import type { CaptureQualityIssueCode } from "../../src/CaptureQuality/types";
@@ -46,7 +46,16 @@ export function buildLightingCombos(grid: LightingSweepGrid = DEFAULT_LIGHTING_S
 					for (const flatCellFractionThreshold of grid.flatCellFractionThreshold) {
 						combos.push({
 							alpha,
-							thresholds: { cellDarkLumaMax, darkCellFractionThreshold, cellFlatContrastMax, flatCellFractionThreshold },
+							thresholds: {
+								cellDarkLumaMax,
+								darkCellFractionThreshold,
+								// Clear levels held at DEFAULTS, not swept - this tool
+								// explores warn-level placement only.
+								darkCellFractionClearThreshold: DEFAULTS.lighting.darkCellFractionClearThreshold,
+								cellFlatContrastMax,
+								flatCellFractionThreshold,
+								flatCellFractionClearThreshold: DEFAULTS.lighting.flatCellFractionClearThreshold,
+							},
 						});
 					}
 				}
@@ -80,10 +89,12 @@ export function evaluateLightingCombo(
 	recordings: readonly ParsedCaptureRecording[],
 	windowSize: number
 ): LightingComboResult {
-	const config: LowLightCheckConfig = { grid: LIGHTING_GRID, thresholds: combo.thresholds, liveWindowRecencyWeight: combo.alpha };
+	const config: LowLightCheckConfig = { grid: LIGHTING_GRID, roi: LIGHTING_ROI, thresholds: combo.thresholds, liveWindowRecencyWeight: combo.alpha };
 
+	// Whole-frame recordings are excluded even when they carry lighting samples: sweeping
+	// ROI-fit thresholds against whole-frame stats would pool two different measurements.
 	const perFile: LightingComboFileResult[] = recordings
-		.filter((r) => r.lightingSamples.length > 0)
+		.filter((r) => r.lightingScope === "roi" && r.lightingSamples.length > 0)
 		.map((recording) => {
 			const steps = replayLighting(recording, config, windowSize);
 			const codeCounts: Partial<Record<CaptureQualityIssueCode, number>> = {};

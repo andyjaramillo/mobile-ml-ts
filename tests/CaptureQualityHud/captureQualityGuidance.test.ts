@@ -26,6 +26,8 @@ function lightAggregate(activeCodes: CaptureQualityIssueCode[]): LowLightWindowA
 		weightedMeanContrastStd: null,
 		weightedFlatCellFraction: null,
 		latest: null,
+		latestRoi: null,
+		latestRoiSource: null,
 		activeCodes,
 	};
 }

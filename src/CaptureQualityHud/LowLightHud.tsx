@@ -38,6 +38,17 @@ const CODE_LABEL: Partial<Record<CaptureQualityIssueCode, string>> = {
 	LOW_CONTRAST: "LOW CONTRAST",
 };
 
+const ROI_SOURCE_LABEL: Record<string, string> = {
+	detected: "detected",
+	"last-known": "last-known",
+	default: "default",
+};
+
+function fmtRoi(roi: { xNorm: number; yNorm: number; widthNorm: number; heightNorm: number } | null | undefined): string {
+	if (!roi) return "--";
+	return `${roi.xNorm.toFixed(2)},${roi.yNorm.toFixed(2)} ${roi.widthNorm.toFixed(2)}x${roi.heightNorm.toFixed(2)}`;
+}
+
 function LowLightHud({ aggregate, config }: Props) {
 	const latest = aggregate?.latest ?? null;
 	const codes = aggregate?.activeCodes ?? [];
@@ -55,6 +66,9 @@ function LowLightHud({ aggregate, config }: Props) {
 			<div className="llh-row">dark cells {fmtFraction(aggregate?.weightedDarkCellFraction)} (min {config.thresholds.darkCellFractionThreshold})</div>
 			<div className="llh-row">contrast {fmtScale255(latest?.meanContrastStd)} / avg {fmtScale255(aggregate?.weightedMeanContrastStd)}</div>
 			<div className="llh-row">flat cells {fmtFraction(aggregate?.weightedFlatCellFraction)} (min {config.thresholds.flatCellFractionThreshold})</div>
+			<div className="llh-row">
+				roi: {aggregate?.latestRoiSource ? ROI_SOURCE_LABEL[aggregate.latestRoiSource] : "--"} [{fmtRoi(aggregate?.latestRoi)}]
+			</div>
 
 			<div className="llh-row llh-codes">
 				{codes.length === 0 ? (

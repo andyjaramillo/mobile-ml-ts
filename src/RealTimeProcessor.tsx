@@ -19,13 +19,13 @@ import type { MarkerBoardWindowAggregate } from "./CaptureQuality/markerBoardChe
 import {
   createLowLightFrameWindow,
   defaultLowLightCheckConfig,
-  evaluateLowLightFrame,
+  evaluateLatestLowLightFrame,
   evaluateLowLightWindowAggregate,
   pushLowLightFrame,
   resetLowLightFrameWindow,
 } from "./CaptureQuality/lowLightCheck";
 import type { LowLightWindowAggregate } from "./CaptureQuality/lowLightCheck";
-import type { CaptureQualityFrameSample } from "./CaptureQuality/types";
+import type { CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "./CaptureQuality/types";
 import MarkerBoardHud from "./CaptureQualityHud/MarkerBoardHud";
 import LowLightHud from "./CaptureQualityHud/LowLightHud";
 import RecorderPanel from "./CaptureQualityHud/RecorderPanel";
@@ -42,12 +42,11 @@ const HUD_UPDATE_EVERY_N_FRAMES = 3; // throttle React state updates off the ~25
 // check (see lowLightCheck.ts header), so lighting needs its own UNFILTERED draw. A
 // second full-resolution getImageData (~640x1138 for the recorded portrait captures) is
 // too expensive to do a second time per frame on a phone - instead this draws to a tiny
-// dedicated canvas. LONG_EDGE=128 keeps an 8x8 grid cell at roughly 16px on the long
-// axis (and >=MIN_SHORT_EDGE/8 ~= 4px on the short axis, more realistically ~9-16px for
-// the aspect ratios this camera actually produces) - enough pixels per cell for a stable
-// mean/std (see evaluateLowLightFrame's numerical-stability comment), while the total
-// pixel count (at most ~128*128, typically ~128*72) stays two orders of magnitude below
-// the detector's own 640-wide canvas, so the extra drawImage+getImageData pair is cheap.
+// dedicated canvas. LONG_EDGE=128 keeps the ROI grid's cells (see
+// captureQualityConfig.ts's LIGHTING_GRID doc for sizing/minPixelsPerCell) comfortably
+// pixel-rich, while the total pixel count (at most ~128*128, typically ~128*72) stays two
+// orders of magnitude below the detector's own 640-wide canvas, so the extra
+// drawImage+getImageData pair is cheap.
 const LIGHTING_CANVAS_LONG_EDGE = 128;
 const LIGHTING_CANVAS_MIN_SHORT_EDGE = 32;
 
@@ -58,6 +57,23 @@ function computeLightingCanvasSize(videoWidth: number, videoHeight: number): { w
     return { width: LIGHTING_CANVAS_LONG_EDGE, height: Math.max(LIGHTING_CANVAS_MIN_SHORT_EDGE, Math.round(LIGHTING_CANVAS_LONG_EDGE / aspect)) };
   }
   return { width: Math.max(LIGHTING_CANVAS_MIN_SHORT_EDGE, Math.round(LIGHTING_CANVAS_LONG_EDGE * aspect)), height: LIGHTING_CANVAS_LONG_EDGE };
+}
+
+// lowLightCheck.ts requires marker corners in the same pixel space as the frame they are
+// attached to, and the detector canvas is a different resolution than the lighting one.
+function rescaleMarkersToLightingCanvas(
+  markers: readonly CaptureQualityDetectedMarker[],
+  fromWidth: number,
+  fromHeight: number,
+  toWidth: number,
+  toHeight: number
+): CaptureQualityDetectedMarker[] {
+  const scaleX = toWidth / fromWidth;
+  const scaleY = toHeight / fromHeight;
+  return markers.map((m) => ({
+    id: m.id,
+    corners: m.corners.map((c) => ({ x: c.x * scaleX, y: c.y * scaleY })),
+  }));
 }
 
 const RealTimeProcessor = () => {
@@ -317,7 +333,7 @@ const RealTimeProcessor = () => {
         // Lighting check: unfiltered draw to its own tiny canvas - see the
         // computeLightingCanvasSize comment above for why this must not reuse offCtx
         // (which is contrast/brightness-boosted for marker detection).
-        let lightingMetrics = null;
+        let lightingResult: ReturnType<typeof evaluateLatestLowLightFrame> = null;
         if (!lightingCanvasRef.current) lightingCanvasRef.current = document.createElement('canvas');
         const lightingCanvas = lightingCanvasRef.current;
         const { width: lightW, height: lightH } = computeLightingCanvasSize(video.videoWidth, video.videoHeight);
@@ -329,19 +345,26 @@ const RealTimeProcessor = () => {
         if (lightCtx) {
           lightCtx.drawImage(video, 0, 0, lightW, lightH);
           const lightingImageData = lightCtx.getImageData(0, 0, lightW, lightH);
+          // Rescale into the lighting canvas's own coordinate space - see
+          // rescaleMarkersToLightingCanvas above for why this is required, not optional.
+          const lightingMarkers = rescaleMarkersToLightingCanvas(markers, hiddeninputW, hiddeninputH, lightW, lightH);
           const lightingFrame: CaptureQualityFrameSample = {
             imageData: lightingImageData,
             timestampMs: startTimeMs,
             frameWidth: lightW,
             frameHeight: lightH,
             people: null,
-            markers: null,
+            markers: lightingMarkers,
           };
           pushLowLightFrame(lowLightWindowRef.current, lightingFrame);
-          lightingMetrics = evaluateLowLightFrame(lightingFrame, lowLightConfigRef.current);
+          lightingResult = evaluateLatestLowLightFrame(lowLightWindowRef.current.frames, lowLightConfigRef.current);
           if (markerBoardTickRef.current % HUD_UPDATE_EVERY_N_FRAMES === 0) {
             setLowLightAggregate(
-              evaluateLowLightWindowAggregate(lowLightWindowRef.current.frames, lowLightConfigRef.current)
+              evaluateLowLightWindowAggregate(
+                lowLightWindowRef.current.frames,
+                lowLightConfigRef.current,
+                lowLightWindowRef.current.hysteresis
+              )
             );
           }
         }
@@ -351,7 +374,7 @@ const RealTimeProcessor = () => {
           frameWidth: hiddeninputW,
           frameHeight: hiddeninputH,
           metrics: evaluateMarkerBoardFrame(captureFrame, markerBoardConfigRef.current),
-          lighting: lightingMetrics,
+          lighting: lightingResult,
         });
 
        drawArucoMarkerIds(ctx, video.clientWidth, video.clientHeight, markers, hiddeninputW, hiddeninputH)
