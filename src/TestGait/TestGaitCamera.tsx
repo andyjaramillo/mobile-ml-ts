@@ -35,7 +35,14 @@ import {
 	HUD_UPDATE_EVERY_N_FRAMES,
 	CAMERA_READY_STABILITY_DELAY_MS,
 } from "./testGaitConfig";
-import gaitOverlaySrc from "../assets/gait-clinic-animated-overlay.apng";
+
+// Served from the CDN rather than bundled: the .apng is a CurveAssure product asset and
+// this repo is public, so it is gitignored and a build-time import breaks any fresh clone.
+// Same URL shape as Website's mobileAssessmentAssetUrl (MobileSchema/Graphic.ts). The
+// bucket gates public reads on an aws:Referer allowlist, so the serving origin must be on
+// it - see the repo README.
+const gaitOverlaySrc =
+	"https://s3.amazonaws.com/curveassure-redirect/mobile-assessment-assets/clinic-assessments/gait/gait-clinic-animated-overlay.apng";
 
 const EXPECTED_MARKER_IDS = new Set(MARKER_BOARD.expectedMarkerIds);
 

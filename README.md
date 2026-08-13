@@ -25,6 +25,16 @@ requires a secure context. The certificate is self-signed - your browser will
 warn on first load; accept it to continue. `npm run dev` also prints a network
 URL; open that from a phone on the same LAN to test against a real camera.
 
+### Assets and the referer allowlist
+
+The Test Gait alignment overlay is a CurveAssure product asset, so it is not in
+this (public) repo - `TestGaitCamera` loads it from the `curveassure-redirect`
+bucket at runtime. That bucket grants public reads only when the request's
+`Referer` matches an allowlist on its bucket policy, so the overlay renders as
+a broken image from any origin not on it. Currently allowed, for this harness:
+the Amplify deployment and `localhost:5173`. Serve on a different port or host
+and you must add it to the policy first.
+
 ## Checks
 
 ```bash
