@@ -89,7 +89,7 @@ export function evaluateLightingCombo(
 	recordings: readonly ParsedCaptureRecording[],
 	windowSize: number
 ): LightingComboResult {
-	const config: LowLightCheckConfig = { grid: LIGHTING_GRID, roi: LIGHTING_ROI, thresholds: combo.thresholds, liveWindowRecencyWeight: combo.alpha };
+	const config: LowLightCheckConfig = { grid: LIGHTING_GRID, roi: LIGHTING_ROI, thresholds: combo.thresholds, liveWindowRecencyWeight: combo.alpha, ewmaReferenceTickHz: DEFAULTS.sampling.ewmaReferenceTickHz };
 
 	// Whole-frame recordings are excluded even when they carry lighting samples: sweeping
 	// ROI-fit thresholds against whole-frame stats would pool two different measurements.

@@ -13,6 +13,8 @@ export const TOTAL_TRIALS = 3;
 // CameraRecordingBlock defaults for FDA gait's camera_display block: no autoStopSeconds,
 // no preferLandscapeOrientation, no completionMessage — manual stop only, orientation
 // unconstrained.
+import { DEFAULTS as CAPTURE_QUALITY_DEFAULTS } from "../CaptureQuality/captureQualityConfig";
+
 export const LEAD_IN_COUNTDOWN_FROM = 3;
 export const GO_MESSAGE = "Go!";
 export const MANUAL_STOP_HINT_DELAY_MS = 3000; // CameraRecording's showManualStopHint effect
@@ -24,6 +26,10 @@ export const MANUAL_STOP_HINT_DELAY_MS = 3000; // CameraRecording's showManualSt
 export const RUN_CAPTURE_QUALITY_CHECKS_WHILE_RECORDING = false;
 
 export const HUD_UPDATE_EVERY_N_FRAMES = 3; // same throttle RealTimeProcessor.tsx uses
+
+// Both mirror RealTimeProcessor.tsx - see the constants there for the reasoning.
+export const DETECTOR_INPUT_MAX_W = 1024;
+export const DETECT_TICK_INTERVAL_MS = 1000 / CAPTURE_QUALITY_DEFAULTS.sampling.liveTickHz;
 
 // CameraRecording's cameraReadyStabilityTimeoutRef delay after loadedmetadata before
 // enabling the record button — avoids a flash of "ready" right as the stream attaches.

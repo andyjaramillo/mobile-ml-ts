@@ -275,6 +275,10 @@ export interface DurationThresholds {
 export interface SamplingConfig {
 	liveWindowFrameCount: number;
 	liveWindowRecencyWeight: number;
+	/** Tick rate at which liveWindowRecencyWeight is the effective EWMA alpha; the checks rescale from it to each real inter-frame gap (see markerBoardCheck.ts's resolveEwmaAlpha), so that a per-frame weight describes a fixed wall-clock smoothing speed rather than drifting with tick rate. */
+	ewmaReferenceTickHz: number;
+	/** Rate the live detect loop is throttled to, decoupled from the display refresh. */
+	liveTickHz: number;
 	postRecordingSampleFraction: number;
 	postRecordingSampleWindow: "middle" | "start" | "end";
 }
@@ -505,6 +509,12 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// measured flap counts this combination produces. Do not change either this or the
 		// hysteresis clear-level fields without re-running that replay.
 		liveWindowRecencyWeight: 0.15,
+		// The thirteen calibration recordings averaged 28-43fps, so 30 is a nominal midpoint
+		// rather than a measured constant: alpha=0.15 was fitted per-frame across that whole
+		// spread, and no single rate is "the" rate it was fitted at. Changing this rescales
+		// every EWMA and invalidates the pinned replay expectations.
+		ewmaReferenceTickHz: 30,
+		liveTickHz: 8, // UNCALIBRATED - no measurement of how slow the checks can tick before guidance feels laggy
 		postRecordingSampleFraction: 0.5, // spec-given: sample the middle 50% of the recorded video for most post-recording checks
 		postRecordingSampleWindow: "middle", // spec-given positioning convention; not every check will use it (e.g. VIDEO_TOO_SHORT/VIDEO_TOO_LONG need the full timeline, not a sampled window)
 	},

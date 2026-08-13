@@ -350,14 +350,17 @@ describe("CQ1 export lines still parse under the extended (CQ1/CQ2/CQ3) parser",
 
 describe("the six committed CQ2 recordings - lighting data is historical (whole-frame), marker classifications are unaffected by the ROI change", () => {
 	const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-	// Pinned against markerBoardCheck.ts DEFAULTS. Re-pin if those legitimately change; a
-	// move caused by a lighting-only edit means the two modules have become coupled.
+	// Final-frame state, pinned against markerBoardCheck.ts DEFAULTS. Re-pin if those
+	// legitimately change; a move caused by a lighting-only edit means the two modules have
+	// become coupled. ideal-overlay-match moved here when the EWMA became time-based - see
+	// markerBoardCheck.test.ts's note on that recording; its dominant state is unchanged,
+	// this is the last frame only, which sits right on the full-set gate.
 	const EXPECTED: Record<string, string> = {
 		"2026-08-12-gait-d-3ft-cropped.cq2.txt": "MARKER_TOO_CLOSE",
 		"2026-08-12-gait-d-3p5ft-good.cq2.txt": "MARKER_TOO_LARGE",
 		"2026-08-13-gait-good-lighting-false-warn.cq2.txt": "OK",
 		"2026-08-13-gait-good-place-drift.cq2.txt": "OK",
-		"2026-08-13-gait-ideal-overlay-match.cq2.txt": "MARKER_INCOMPLETE",
+		"2026-08-13-gait-ideal-overlay-match.cq2.txt": "OK",
 		"2026-08-13-gait-viable-range-sweep.cq2.txt": "MARKER_INCOMPLETE",
 	};
 
