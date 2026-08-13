@@ -14,6 +14,8 @@ import {
 
 interface Props {
 	stateRef: MutableRefObject<CaptureRecorderState>;
+	/** Distance from the safe-area top inset, in px. Defaults to the RealTimeProcessor.tsx layout (below its model/facing-mode <select> pair); callers with different top chrome (e.g. TestGait's setup instructions) can push this panel down. */
+	topOffsetPx?: number;
 }
 
 // Top-anchored and slim: the board sits low-centre in frame, and MarkerBoardHud already
@@ -26,7 +28,7 @@ function formatElapsed(ms: number): string {
 	return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function RecorderPanel({ stateRef }: Props) {
+function RecorderPanel({ stateRef, topOffsetPx = 40 }: Props) {
 	const [tagInput, setTagInput] = useState(stateRef.current.scenarioTag);
 	const [isRecording, setIsRecording] = useState(stateRef.current.recording);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "fallback">("idle");
@@ -101,7 +103,7 @@ function RecorderPanel({ stateRef }: Props) {
 	}
 
 	return (
-		<div className="crp-root">
+		<div className="crp-root" style={{ top: `calc(env(safe-area-inset-top, 0px) + ${topOffsetPx}px)` }}>
 			<style>{CSS}</style>
 			<div className="crp-row">
 				<input

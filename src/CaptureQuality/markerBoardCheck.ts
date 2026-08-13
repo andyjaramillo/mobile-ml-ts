@@ -52,6 +52,8 @@ export function defaultMarkerBoardCheckConfig(config: CaptureQualityConfig = DEF
 }
 
 export interface MarkerBoardFrameMetrics {
+	/** Same clock as CaptureQualityFrameSample.timestampMs for this frame - carried through so aggregateMarkerBoardMetrics can measure REAL elapsed time for the per-marker persistence signal (see MarkerPersistenceResult) instead of assuming a fixed frame rate. */
+	timestampMs: number;
 	visibleCount: number;
 	/** Sorted ascending, for display/debugging only. */
 	visibleIds: readonly number[];
@@ -75,7 +77,7 @@ export interface MarkerBoardFrameMetrics {
 	detectedMarkerAreaNorm: number | null;
 }
 
-const EMPTY_METRICS: Omit<MarkerBoardFrameMetrics, "visibleCount" | "visibleIds"> = {
+const EMPTY_METRICS: Omit<MarkerBoardFrameMetrics, "timestampMs" | "visibleCount" | "visibleIds"> = {
 	isFullSet: false,
 	normalizedArea: null,
 	diagonalRatio: null,
@@ -237,7 +239,7 @@ export function evaluateMarkerBoardFrame(
 	const visibleCount = markers ? markers.length : 0;
 	const visibleIds = markers ? [...new Set(markers.map((m) => m.id))].sort((a, b) => a - b) : [];
 	if (!markers || markers.length === 0) {
-		return { visibleCount, visibleIds, ...EMPTY_METRICS };
+		return { timestampMs: frame.timestampMs, visibleCount, visibleIds, ...EMPTY_METRICS };
 	}
 
 	const { byId, hasDuplicates } = buildMarkerIndex(markers);
@@ -247,7 +249,7 @@ export function evaluateMarkerBoardFrame(
 	const detectedMarkerAreaNorm = computeDetectedMarkerAreaNorm(byId, frame.frameWidth, frame.frameHeight);
 	const isFullSet = !hasDuplicates && config.layout.expectedMarkerIds.every((id) => byId.has(id));
 	if (!isFullSet) {
-		return { visibleCount, visibleIds, ...EMPTY_METRICS, detectedMarkerAreaNorm };
+		return { timestampMs: frame.timestampMs, visibleCount, visibleIds, ...EMPTY_METRICS, detectedMarkerAreaNorm };
 	}
 
 	const normalizedArea = computeNormalizedArea(byId, config.layout, frame.frameWidth, frame.frameHeight);
@@ -256,7 +258,7 @@ export function evaluateMarkerBoardFrame(
 
 	const geometryOk =
 		normalizedArea !== null && diagonalRatio !== null
-			? normalizedArea >= config.thresholds.minimumMarkerAreaNorm &&
+			? normalizedArea >= config.thresholds.sizeWarnLowerNorm &&
 				diagonalRatio >= config.thresholds.diagonalRatioMin &&
 				diagonalRatio <= config.thresholds.diagonalRatioMax
 			: null;
@@ -264,6 +266,7 @@ export function evaluateMarkerBoardFrame(
 		orientationAngleRad !== null ? orientationAngleRad <= config.thresholds.orientationMarginRad : null;
 
 	return {
+		timestampMs: frame.timestampMs,
 		visibleCount,
 		visibleIds,
 		isFullSet: true,
@@ -277,6 +280,122 @@ export function evaluateMarkerBoardFrame(
 }
 
 /**
+ * Per-marker "how long has this ID been continuously absent" tracker. Deliberately NOT
+ * bounded by MarkerBoardFrameWindow.maxFrames (the ~15-frame EWMA recency window): a
+ * structural miss (something covering the board) needs a longer lookback than that
+ * window can hold. At the fps actually measured on real hardware (28-43fps), a 15-frame
+ * window only spans 0.35-0.54s - straddling the 0.5s persistence threshold - so bounding
+ * this to the same window would sometimes fail to register a genuinely permanent miss
+ * for no reason other than the window being too short to see it. Cost is O(1) state per
+ * marker (a handful of numbers), so there is no memory-growth reason to bound it either.
+ */
+export interface MarkerPersistenceTracker {
+	lastSeenMs: Map<number, number>;
+	/** Timestamp of the first frame pushed since the last reset - the "missing since" baseline for a marker never yet seen this trial. */
+	firstFrameTimestampMs: number | null;
+}
+
+export function createMarkerPersistenceTracker(): MarkerPersistenceTracker {
+	return { lastSeenMs: new Map(), firstFrameTimestampMs: null };
+}
+
+export function updateMarkerPersistenceTracker(
+	tracker: MarkerPersistenceTracker,
+	timestampMs: number,
+	visibleIds: readonly number[]
+): void {
+	if (tracker.firstFrameTimestampMs === null) tracker.firstFrameTimestampMs = timestampMs;
+	for (const id of visibleIds) tracker.lastSeenMs.set(id, timestampMs);
+}
+
+export function resetMarkerPersistenceTracker(tracker: MarkerPersistenceTracker): void {
+	tracker.lastSeenMs.clear();
+	tracker.firstFrameTimestampMs = null;
+}
+
+export interface MarkerPersistenceResult {
+	/** Every expected marker ID currently missing for >= the configured threshold, as of the tracker's most recent update. */
+	persistentMissingIds: readonly number[];
+	/** Longest current per-marker absence across all expected markers, in ms. Null if the tracker has never been updated. */
+	longestCurrentMissMs: number | null;
+}
+
+const NO_PERSISTENT_MISS: MarkerPersistenceResult = { persistentMissingIds: [], longestCurrentMissMs: null };
+
+/** Reads the tracker's CURRENT state as of `nowMs` - does not itself advance the tracker (see updateMarkerPersistenceTracker). */
+export function evaluateMarkerPersistence(
+	tracker: MarkerPersistenceTracker,
+	expectedMarkerIds: readonly number[],
+	nowMs: number,
+	thresholdMs: number
+): MarkerPersistenceResult {
+	if (tracker.firstFrameTimestampMs === null) return NO_PERSISTENT_MISS;
+	const persistentMissingIds: number[] = [];
+	let longestCurrentMissMs = 0;
+	for (const id of expectedMarkerIds) {
+		const lastSeenMs = tracker.lastSeenMs.get(id) ?? tracker.firstFrameTimestampMs;
+		const missingMs = nowMs - lastSeenMs;
+		if (missingMs > longestCurrentMissMs) longestCurrentMissMs = missingMs;
+		if (missingMs >= thresholdMs) persistentMissingIds.push(id);
+	}
+	return { persistentMissingIds, longestCurrentMissMs: longestCurrentMissMs > 0 ? longestCurrentMissMs : null };
+}
+
+/**
+ * Per-signal "is this currently firing" memory for the three continuous thresholds that
+ * get hysteresis (orientation, the full-set visibility gate, and the size-too-small
+ * nudge - see applyHysteresis below and captureQualityConfig.ts's *ClearNorm/*ClearWeight/
+ * *ClearMarginRad field docs for the gap derivations). Same reasoning as
+ * MarkerPersistenceTracker for why this is caller-owned mutable state rather than derived
+ * fresh each call: a signal sitting near a single fixed threshold oscillates with any
+ * amount of measurement noise, and no amount of window smoothing removes that - the fix
+ * requires remembering which side of the threshold the check was already on, across calls,
+ * which a pure per-window-snapshot function cannot do on its own.
+ */
+export interface MarkerBoardHysteresisState {
+	orientationBad: boolean;
+	fullSetBad: boolean;
+	tooSmallBad: boolean;
+	tooLargeBad: boolean;
+}
+
+export function createMarkerBoardHysteresisState(): MarkerBoardHysteresisState {
+	return { orientationBad: false, fullSetBad: false, tooSmallBad: false, tooLargeBad: false };
+}
+
+export function resetMarkerBoardHysteresisState(state: MarkerBoardHysteresisState): void {
+	state.orientationBad = false;
+	state.fullSetBad = false;
+	state.tooSmallBad = false;
+	state.tooLargeBad = false;
+}
+
+/**
+ * One hysteresis step: `state` is the previous call's verdict, `value` the freshly
+ * computed signal. `direction` says which side of the threshold counts as bad -
+ * "above" (e.g. orientation angle) needs `clearLevel < warnLevel` to mean anything;
+ * "below" (e.g. full-set score, size) needs `clearLevel > warnLevel`. Not yet bad, the
+ * signal must cross `warnLevel` to become bad (unchanged from a plain single-threshold
+ * comparison); already bad, it must cross the more forgiving `clearLevel`, not merely
+ * back over `warnLevel`, to clear - that gap is what a same-magnitude noise excursion
+ * can no longer bridge. `value === null` (signal not computable this call) holds the
+ * previous verdict rather than guessing.
+ */
+function applyHysteresis(
+	state: boolean,
+	value: number | null,
+	warnLevel: number,
+	clearLevel: number,
+	direction: "above" | "below"
+): boolean {
+	if (value === null) return state;
+	if (direction === "above") {
+		return state ? value >= clearLevel : value > warnLevel;
+	}
+	return state ? value <= clearLevel : value < warnLevel;
+}
+
+/**
  * Explicit, caller-owned rolling window of raw frame samples (bounded ring buffer).
  * Deliberately holds no ImageData — this check only needs marker geometry — so it
  * cannot reproduce the sampler.ts unbounded-buffer memory problem. Must be reset
@@ -286,10 +405,19 @@ export function evaluateMarkerBoardFrame(
 export interface MarkerBoardFrameWindow {
 	readonly maxFrames: number;
 	frames: CaptureQualityFrameSample[];
+	/** Unbounded-lookback companion to `frames` - see MarkerPersistenceTracker. */
+	persistence: MarkerPersistenceTracker;
+	/** Cross-call hysteresis memory companion to `frames` - see MarkerBoardHysteresisState. */
+	hysteresis: MarkerBoardHysteresisState;
 }
 
 export function createMarkerBoardFrameWindow(maxFrames: number): MarkerBoardFrameWindow {
-	return { maxFrames: Math.max(1, Math.floor(maxFrames)), frames: [] };
+	return {
+		maxFrames: Math.max(1, Math.floor(maxFrames)),
+		frames: [],
+		persistence: createMarkerPersistenceTracker(),
+		hysteresis: createMarkerBoardHysteresisState(),
+	};
 }
 
 export function pushMarkerBoardFrame(window: MarkerBoardFrameWindow, frame: CaptureQualityFrameSample): void {
@@ -297,10 +425,14 @@ export function pushMarkerBoardFrame(window: MarkerBoardFrameWindow, frame: Capt
 	if (window.frames.length > window.maxFrames) {
 		window.frames.splice(0, window.frames.length - window.maxFrames);
 	}
+	const visibleIds = frame.markers ? [...new Set(frame.markers.map((m) => m.id))] : [];
+	updateMarkerPersistenceTracker(window.persistence, frame.timestampMs, visibleIds);
 }
 
 export function resetMarkerBoardFrameWindow(window: MarkerBoardFrameWindow): void {
 	window.frames.length = 0;
+	resetMarkerPersistenceTracker(window.persistence);
+	resetMarkerBoardHysteresisState(window.hysteresis);
 }
 
 export interface MarkerBoardWindowAggregate {
@@ -339,7 +471,9 @@ export interface MarkerBoardWindowAggregate {
  */
 export function aggregateMarkerBoardMetrics(
 	metricsSequence: readonly MarkerBoardFrameMetrics[],
-	config: MarkerBoardCheckConfig
+	config: MarkerBoardCheckConfig,
+	persistence: MarkerPersistenceResult = NO_PERSISTENT_MISS,
+	hysteresis: MarkerBoardHysteresisState = createMarkerBoardHysteresisState()
 ): MarkerBoardWindowAggregate {
 	if (metricsSequence.length === 0) {
 		return {
@@ -395,37 +529,116 @@ export function aggregateMarkerBoardMetrics(
 
 	const weightedFullSetScore = fullSetScore ?? 0;
 	const activeCodes: CaptureQualityIssueCode[] = [];
-	// Priority order: completeness first — if the board isn't reliably fully visible,
-	// geometry/orientation numbers from the sliver that is visible are not meaningful,
-	// so every other code is suppressed rather than fired alongside it. Which of the two
-	// incompleteness codes fires depends on why: a large mean size for the markers that
-	// ARE visible means the board doesn't fit the frame (MARKER_TOO_CLOSE, remedy: move
-	// back); anything else defaults to MARKER_INCOMPLETE (remedy: move closer / clear
-	// occlusion) since that has been the safe, always-correct-for-"too far" behavior.
-	// tooCloseDetectedAreaNorm is null (uncalibrated - see captureQualityConfig.ts) until
-	// real close-range data exists, so this branch is a no-op in DEFAULTS today.
-	if (weightedFullSetScore < config.thresholds.minimumFullSetWeight) {
-		if (
-			config.thresholds.tooCloseDetectedAreaNorm !== null &&
-			detectedMarkerAreaNorm !== null &&
-			detectedMarkerAreaNorm >= config.thresholds.tooCloseDetectedAreaNorm
-		) {
+	// "Widened ideal band" model (2026-08-13). Full-set rate still owns whether the board
+	// is visible at all; size (normalizedArea/detectedMarkerAreaNorm) never blocks by
+	// itself - see captureQualityConfig.ts's MarkerBoardThresholds doc for the full
+	// decision table. All three of the checks below (orientation, full-set gate, size
+	// floor) go through applyHysteresis rather than a bare threshold comparison: `hysteresis`
+	// is caller-owned mutable state (see MarkerBoardFrameWindow.hysteresis for the
+	// production caller), so the verdict below depends on the PREVIOUS call's state, not
+	// just this call's numbers - that is what lets a signal sitting right at a threshold
+	// stop flapping instead of just filtering the noise (which doesn't work - see
+	// applyHysteresis's doc). A caller that never threads a state through (the default
+	// parameter creates a fresh one) gets the old single-threshold behavior back, since a
+	// fresh state has nothing to remember.
+	//
+	// Priority order: ORIENTATION FIRST, independent of the full-set gate (2026-08-13
+	// reorder - previously gated behind it). orientationAngleRad's own EWMA above only
+	// ever advances on full-set frames (see the `if (metrics.isFullSet)` block), so it is
+	// already a full-set-only signal on its own merits and does not need the full-set
+	// gate to be trustworthy - a real regression this reorder fixes: at the previous
+	// minimumFullSetWeight=0.90, rot-90 (80.0% raw full-set rate) failed the visibility
+	// gate before orientation was ever evaluated, so a genuinely rotated board reported as
+	// a visibility problem (MARKER_INCOMPLETE) instead of the actionable
+	// MARKER_WRONG_ORIENTATION - the wrong instruction, since straightening the board is
+	// what actually fixes it (rotation is very likely WHY full-set rate is depressed in
+	// the first place, not a coincidence). Completeness is checked next: if the board
+	// isn't reliably fully visible, the size numbers from the sliver that is visible are
+	// not meaningful, so every other code is suppressed rather than fired alongside it.
+	// Which incompleteness code fires depends on whether the miss is STRUCTURAL (see
+	// MarkerPersistenceResult - the same marker gone for >= persistentMissThresholdMs, not
+	// scattered noise): a scattered incomplete set always reports MARKER_INCOMPLETE
+	// regardless of size, since there is no single persistent culprit to reason about size
+	// from. A persistent miss splits further by detected marker size, which is the only
+	// case where size distinguishes "board doesn't fit the frame" (large ->
+	// MARKER_TOO_CLOSE, remedy: step back/tilt down) from "something is covering it"
+	// (mid-range -> MARKER_OBSTRUCTED) from "too far to resolve" (small ->
+	// MARKER_INCOMPLETE, remedy: move closer). The TOO_CLOSE/OBSTRUCTED/INCOMPLETE split
+	// itself is NOT hysteresis-controlled (out of this revision's scope) - only whether the
+	// gate that leads into that branch is open or closed.
+	const hasPersistentMiss = persistence.persistentMissingIds.length > 0;
+
+	hysteresis.orientationBad = applyHysteresis(
+		hysteresis.orientationBad,
+		orientationAngleRad,
+		config.thresholds.orientationMarginRad,
+		config.thresholds.orientationClearMarginRad,
+		"above"
+	);
+	hysteresis.fullSetBad = applyHysteresis(
+		hysteresis.fullSetBad,
+		weightedFullSetScore,
+		config.thresholds.minimumFullSetWeight,
+		config.thresholds.minimumFullSetClearWeight,
+		"below"
+	);
+
+	if (hysteresis.orientationBad) {
+		// Also still gates (not just precedes) the two metrics below: a heavily rotated
+		// board corrupts normalizedArea/diagonalRatio because both assume the diamond
+		// corner-role mapping (top/right/bottom/left) still matches reality (rot-90
+		// measured area 0.00414 vs 0.00316 aligned, diagonal 0.639 vs 0.238 - see
+		// captureQualityConfig.ts diagonalRatio comment). Reporting MARKER_TOO_SMALL/
+		// MARKER_TOO_LARGE/MARKER_SKEWED off a rotation-corrupted reading would point the
+		// user at the wrong fix, so they're suppressed until orientation is back in range.
+		// tooSmallBad/tooLargeBad are deliberately left un-updated here (not evaluated
+		// while orientation-gated) so each resumes from its last real reading, not a
+		// corrupted one, once orientation clears.
+		activeCodes.push("MARKER_WRONG_ORIENTATION");
+	} else if (hysteresis.fullSetBad) {
+		const ceiling = config.thresholds.tooCloseDetectedAreaNorm;
+		if (hasPersistentMiss && detectedMarkerAreaNorm !== null && ceiling !== null && detectedMarkerAreaNorm > ceiling) {
 			activeCodes.push("MARKER_TOO_CLOSE");
+		} else if (
+			hasPersistentMiss &&
+			detectedMarkerAreaNorm !== null &&
+			ceiling !== null &&
+			detectedMarkerAreaNorm >= config.thresholds.sizeWarnLowerNorm &&
+			detectedMarkerAreaNorm <= ceiling
+		) {
+			activeCodes.push("MARKER_OBSTRUCTED");
 		} else {
 			activeCodes.push("MARKER_INCOMPLETE");
 		}
-	} else if (orientationAngleRad !== null && orientationAngleRad > config.thresholds.orientationMarginRad) {
-		// Orientation next, and gating (not just ordered before) the two metrics below: a
-		// heavily rotated board corrupts normalizedArea/diagonalRatio because both assume
-		// the diamond corner-role mapping (top/right/bottom/left) still matches reality
-		// (rot-90 measured area 0.00414 vs 0.00316 aligned, diagonal 0.639 vs 0.238 - see
-		// captureQualityConfig.ts diagonalRatio comment). Reporting MARKER_TOO_SMALL or
-		// MARKER_SKEWED off a rotation-corrupted reading would point the user at the wrong
-		// fix, so they're suppressed until orientation is back in range.
-		activeCodes.push("MARKER_WRONG_ORIENTATION");
 	} else {
-		if (normalizedArea !== null && normalizedArea < config.thresholds.minimumMarkerAreaNorm) {
+		// Full set reliably present, orientation fine: size is a NUDGE only
+		// (non-critical/warning - see INDICATOR_BY_CODE), never a hard fail. Four-boundary
+		// band (see captureQualityConfig.ts) - below sizeWarnLowerNorm or at/above
+		// sizeWarnUpperNorm nudges; everything between is silent at this layer (the HUD
+		// surfaces the ideal band's positive confirmation - see
+		// CaptureQualityHud/captureQualityGuidance.ts). The two boundaries can never both
+		// fire on the same reading (sizeWarnLowerNorm < sizeWarnUpperNorm by construction),
+		// so evaluating both independently rather than if/else-if is safe and keeps each
+		// one's hysteresis state accurate even while the other is inactive.
+		hysteresis.tooSmallBad = applyHysteresis(
+			hysteresis.tooSmallBad,
+			normalizedArea,
+			config.thresholds.sizeWarnLowerNorm,
+			config.thresholds.sizeWarnLowerClearNorm,
+			"below"
+		);
+		if (hysteresis.tooSmallBad) {
 			activeCodes.push("MARKER_TOO_SMALL");
+		}
+		hysteresis.tooLargeBad = applyHysteresis(
+			hysteresis.tooLargeBad,
+			normalizedArea,
+			config.thresholds.sizeWarnUpperNorm,
+			config.thresholds.sizeWarnUpperClearNorm,
+			"above"
+		);
+		if (hysteresis.tooLargeBad) {
+			activeCodes.push("MARKER_TOO_LARGE");
 		}
 		if (
 			diagonalRatio !== null &&
@@ -447,24 +660,43 @@ export function aggregateMarkerBoardMetrics(
 	};
 }
 
-/** The live/on-device entry point: computes per-frame metrics from raw frame samples, then delegates to aggregateMarkerBoardMetrics. */
+/**
+ * The live/on-device entry point: computes per-frame metrics from raw frame samples,
+ * then delegates to aggregateMarkerBoardMetrics. `persistenceTracker` and `hysteresis`
+ * are both optional and default to "no memory" (matching pre-persistence/pre-hysteresis
+ * behavior) so ad hoc callers (tests, evaluateMarkerBoardWindow below) that only have a
+ * bare frame array can still call this - production callers pass the frame window's own
+ * `.persistence`/`.hysteresis` (see MarkerBoardFrameWindow), which is what gives both
+ * signals their cross-call memory.
+ */
 export function evaluateMarkerBoardWindowAggregate(
 	frames: readonly CaptureQualityFrameSample[],
-	config: MarkerBoardCheckConfig
+	config: MarkerBoardCheckConfig,
+	persistenceTracker?: MarkerPersistenceTracker,
+	hysteresis?: MarkerBoardHysteresisState
 ): MarkerBoardWindowAggregate {
-	return aggregateMarkerBoardMetrics(
-		frames.map((frame) => evaluateMarkerBoardFrame(frame, config)),
-		config
-	);
+	const metricsSequence = frames.map((frame) => evaluateMarkerBoardFrame(frame, config));
+	const persistence =
+		persistenceTracker && frames.length > 0
+			? evaluateMarkerPersistence(
+					persistenceTracker,
+					config.layout.expectedMarkerIds,
+					frames[frames.length - 1].timestampMs,
+					config.thresholds.persistentMissThresholdMs
+				)
+			: NO_PERSISTENT_MISS;
+	return aggregateMarkerBoardMetrics(metricsSequence, config, persistence, hysteresis);
 }
 
 const INDICATOR_BY_CODE: Record<
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_TOO_SMALL" | "MARKER_SKEWED" | "MARKER_WRONG_ORIENTATION",
+	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "MARKER_SKEWED" | "MARKER_WRONG_ORIENTATION",
 	{ severity: CaptureQualitySeverity; state: CaptureQualityLiveIndicatorState }
 > = {
 	MARKER_INCOMPLETE: { severity: "critical", state: "critical" },
 	MARKER_TOO_CLOSE: { severity: "critical", state: "critical" },
+	MARKER_OBSTRUCTED: { severity: "critical", state: "critical" },
 	MARKER_TOO_SMALL: { severity: "non-critical", state: "warning" },
+	MARKER_TOO_LARGE: { severity: "non-critical", state: "warning" },
 	MARKER_SKEWED: { severity: "non-critical", state: "warning" },
 	MARKER_WRONG_ORIENTATION: { severity: "non-critical", state: "warning" },
 };

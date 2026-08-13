@@ -29,6 +29,7 @@ import type { CaptureQualityFrameSample } from "./CaptureQuality/types";
 import MarkerBoardHud from "./CaptureQualityHud/MarkerBoardHud";
 import LowLightHud from "./CaptureQualityHud/LowLightHud";
 import RecorderPanel from "./CaptureQualityHud/RecorderPanel";
+import GuidanceBanner from "./CaptureQualityHud/GuidanceBanner";
 import { createCaptureRecorderState, recordCaptureFrame } from "./CaptureQualityHud/captureRecorder";
 
 const EXPECTED_MARKER_IDS = new Set(MARKER_BOARD.expectedMarkerIds);
@@ -67,6 +68,10 @@ const RealTimeProcessor = () => {
   const fpsRef = useRef(0);
   
   const [facingMode, setFacingMode] = useState("user"); // "user" or "environment"
+  // Debug HUD (MarkerBoardHud/LowLightHud, the developer-chip panels) defaults ON here to
+  // preserve this page's existing calibration workflow; GuidanceBanner (patient-facing,
+  // always shown) carries its own toggle so it can be flipped off to see the patient view.
+  const [showDebugHud, setShowDebugHud] = useState(true);
 
   
   const [videoDimensions, setVideoDimensions] = useState({
@@ -300,7 +305,12 @@ const RealTimeProcessor = () => {
         markerBoardTickRef.current += 1;
         if (markerBoardTickRef.current % HUD_UPDATE_EVERY_N_FRAMES === 0) {
           setMarkerBoardAggregate(
-            evaluateMarkerBoardWindowAggregate(markerBoardWindowRef.current.frames, markerBoardConfigRef.current)
+            evaluateMarkerBoardWindowAggregate(
+              markerBoardWindowRef.current.frames,
+              markerBoardConfigRef.current,
+              markerBoardWindowRef.current.persistence,
+              markerBoardWindowRef.current.hysteresis
+            )
           );
         }
 
@@ -474,9 +484,21 @@ const RealTimeProcessor = () => {
        />
        {modelType === "aruco" && (
          <>
-           <MarkerBoardHud aggregate={markerBoardAggregate} config={markerBoardConfigRef.current} />
-           <LowLightHud aggregate={lowLightAggregate} config={lowLightConfigRef.current} />
-           <RecorderPanel stateRef={captureRecorderStateRef} />
+           <GuidanceBanner
+             markerBoardAggregate={markerBoardAggregate}
+             lowLightAggregate={lowLightAggregate}
+             markerBoardConfig={markerBoardConfigRef.current}
+             showDebugHud={showDebugHud}
+             onToggleDebugHud={() => setShowDebugHud((v) => !v)}
+             topOffsetPx={40}
+           />
+           {showDebugHud && (
+             <>
+               <MarkerBoardHud aggregate={markerBoardAggregate} config={markerBoardConfigRef.current} />
+               <LowLightHud aggregate={lowLightAggregate} config={lowLightConfigRef.current} />
+             </>
+           )}
+           <RecorderPanel stateRef={captureRecorderStateRef} topOffsetPx={104} />
          </>
        )}
     </div>

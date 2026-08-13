@@ -7,6 +7,8 @@ import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
 interface Props {
 	aggregate: MarkerBoardWindowAggregate | null;
 	config: MarkerBoardCheckConfig;
+	/** Distance from the safe-area bottom inset, in px. Defaults to 0 (RealTimeProcessor.tsx has nothing else at the bottom); callers whose own bottom chrome would collide (e.g. TestGait's record button cluster) can push this panel up. */
+	bottomOffsetPx?: number;
 }
 
 // Values in this check run ~0.004-0.008 at close range; toFixed(4) on that reads as
@@ -22,8 +24,10 @@ const CODE_LABEL: Record<CaptureQualityIssueCode, string> = {
 	MARKER_INCOMPLETE: "INCOMPLETE",
 	MARKER_TOO_CLOSE: "TOO CLOSE",
 	MARKER_TOO_SMALL: "TOO SMALL",
+	MARKER_TOO_LARGE: "TOO LARGE",
 	MARKER_SKEWED: "SKEWED",
 	MARKER_WRONG_ORIENTATION: "WRONG ORIENTATION",
+	MARKER_OBSTRUCTED: "OBSTRUCTED",
 	SUBJECT_NOT_DETECTED: "SUBJECT_NOT_DETECTED",
 	SUBJECT_NOT_STATIONARY: "SUBJECT_NOT_STATIONARY",
 	SUBJECT_NOT_AT_START_LINE: "SUBJECT_NOT_AT_START_LINE",
@@ -36,14 +40,20 @@ const CODE_LABEL: Record<CaptureQualityIssueCode, string> = {
 	VIDEO_TOO_LONG: "VIDEO_TOO_LONG",
 };
 
-function MarkerBoardHud({ aggregate, config }: Props) {
+function MarkerBoardHud({ aggregate, config, bottomOffsetPx = 0 }: Props) {
 	const latest = aggregate?.latest ?? null;
 	const codes = aggregate?.activeCodes ?? [];
 	const ok = aggregate !== null && codes.length === 0 && (latest?.visibleCount ?? 0) > 0;
-	const hasCritical = codes.includes("MARKER_INCOMPLETE") || codes.includes("MARKER_TOO_CLOSE");
+	const hasCritical =
+		codes.includes("MARKER_INCOMPLETE") || codes.includes("MARKER_TOO_CLOSE") || codes.includes("MARKER_OBSTRUCTED");
 
 	return (
-		<div className="mbh-root" role="status" aria-live="polite">
+		<div
+			className="mbh-root"
+			role="status"
+			aria-live="polite"
+			style={bottomOffsetPx ? { bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffsetPx}px)` } : undefined}
+		>
 			<style>{CSS}</style>
 			<div className="mbh-row mbh-header">
 				<span className={`mbh-dot ${ok ? "mbh-dot-ok" : hasCritical ? "mbh-dot-critical" : codes.length > 0 ? "mbh-dot-warning" : "mbh-dot-idle"}`} />
@@ -71,7 +81,14 @@ function MarkerBoardHud({ aggregate, config }: Props) {
 					<span className="mbh-chip mbh-chip-ok">ok</span>
 				) : (
 					codes.map((code) => (
-						<span key={code} className={`mbh-chip ${code === "MARKER_INCOMPLETE" || code === "MARKER_TOO_CLOSE" ? "mbh-chip-critical" : "mbh-chip-warning"}`}>
+						<span
+							key={code}
+							className={`mbh-chip ${
+								code === "MARKER_INCOMPLETE" || code === "MARKER_TOO_CLOSE" || code === "MARKER_OBSTRUCTED"
+									? "mbh-chip-critical"
+									: "mbh-chip-warning"
+							}`}
+						>
 							{CODE_LABEL[code]}
 						</span>
 					))

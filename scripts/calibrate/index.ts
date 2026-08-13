@@ -74,7 +74,7 @@ function printLightingStats(recording: ParsedCaptureRecording): void {
 function writeSweepCsv(path: string, results: readonly ComboResult[]): void {
 	const header = [
 		"alpha",
-		"minimumMarkerAreaNorm",
+		"sizeWarnLowerNorm",
 		"diagonalRatioMin",
 		"diagonalRatioMax",
 		"orientationMarginRad",
@@ -93,7 +93,7 @@ function writeSweepCsv(path: string, results: readonly ComboResult[]): void {
 		result.perFile.map((f) =>
 			[
 				result.combo.alpha,
-				result.combo.thresholds.minimumMarkerAreaNorm,
+				result.combo.thresholds.sizeWarnLowerNorm,
 				result.combo.thresholds.diagonalRatioMin,
 				result.combo.thresholds.diagonalRatioMax,
 				result.combo.thresholds.orientationMarginRad,
@@ -170,7 +170,7 @@ function printLightingComboTable(results: readonly LightingComboResult[]): void 
 
 function comboLabel(result: ComboResult): string {
 	const t = result.combo.thresholds;
-	return `alpha=${result.combo.alpha} area>=${t.minimumMarkerAreaNorm} diag=[${t.diagonalRatioMin},${t.diagonalRatioMax}] orient<=${t.orientationMarginRad} fullset>=${t.minimumFullSetWeight}`;
+	return `alpha=${result.combo.alpha} sizeFloor=${t.sizeWarnLowerNorm} diag=[${t.diagonalRatioMin},${t.diagonalRatioMax}] orient<=${t.orientationMarginRad} fullset>=${t.minimumFullSetWeight}`;
 }
 
 function printComboTable(results: readonly ComboResult[]): void {

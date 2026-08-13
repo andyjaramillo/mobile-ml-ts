@@ -75,7 +75,7 @@ describe("calibrate pipeline against the committed CQ1 fixture", () => {
 	it("runs a small parameter sweep end to end without throwing", () => {
 		const combos = buildCombos({
 			liveWindowRecencyWeight: [0.5],
-			minimumMarkerAreaNorm: [0.001, 0.005],
+			sizeWarnLowerNorm: [0.001, 0.005],
 			diagonalRatioMin: [0.1],
 			diagonalRatioMax: [0.6],
 			orientationMarginRad: [0.3],

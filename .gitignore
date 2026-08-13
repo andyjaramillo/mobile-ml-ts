@@ -31,3 +31,7 @@ build/
 
 # generated calibrate script output (see scripts/calibrate)
 calibrate-output/
+
+# CurveAssure product asset - pulled from S3, not for a public repo
+# Fetch with: aws s3 cp --profile ca-dev s3://curveassure-redirect/<path> src/assets/
+src/assets/gait-clinic-animated-overlay.apng

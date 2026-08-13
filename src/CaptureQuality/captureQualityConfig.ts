@@ -69,23 +69,116 @@ export const MARKER_BOARD: MarkerBoardLayout = {
 };
 
 export interface MarkerBoardThresholds {
-	minimumMarkerAreaNorm: number;
+	/**
+	 * Four-boundary size model (2026-08-13 "viable range" revision, reintroducing
+	 * sizeWarnUpperNorm/MARKER_TOO_LARGE behind a measured human-demonstrated limit - see
+	 * git history for the intervening "widened ideal band" revision that removed it, and
+	 * the REINTRODUCED note on sizeWarnUpperNorm below for why that removal doesn't apply
+	 * to this number). Size is still not an independent pass/fail gate - full-set rate
+	 * (minimumFullSetWeight) owns whether the board is visible at all. Once that gate is
+	 * cleared and orientation is in range, normalizedArea (the full nine-marker mean,
+	 * full-set frames only) is read against four boundaries, low to high:
+	 *   area <  sizeWarnLowerNorm                        -> MARKER_TOO_SMALL ("move closer")
+	 *   sizeWarnLowerNorm  <= area <  sizeIdealLowerNorm  -> acceptable, silent (no code)
+	 *   sizeIdealLowerNorm <= area <= sizeIdealUpperNorm  -> ideal, silent at the check layer
+	 *     (the HUD layer surfaces a positive confirmation here - see
+	 *     CaptureQualityHud/captureQualityGuidance.ts; this module stays code-only)
+	 *   sizeIdealUpperNorm <  area <  sizeWarnUpperNorm   -> acceptable, silent (no code)
+	 *   area >= sizeWarnUpperNorm                         -> MARKER_TOO_LARGE ("step back")
+	 * Also used, in the incomplete-set branch, for a persistent single-marker miss's
+	 * TOO_CLOSE/OBSTRUCTED/INCOMPLETE split - see tooCloseDetectedAreaNorm below, which
+	 * pairs with sizeWarnLowerNorm there the same way it pairs with the size-nudge branch
+	 * above (that split is unrelated to, and not superseded by, sizeWarnUpperNorm).
+	 */
+	sizeWarnLowerNorm: number;
+	/**
+	 * Hysteresis clear level for sizeWarnLowerNorm (MARKER_TOO_SMALL): once "too small" is
+	 * active, normalizedArea must rise above THIS level, not just back over
+	 * sizeWarnLowerNorm, before the nudge clears. Gap (0.00015) is exactly the drift
+	 * recording's own measured normalizedArea std at a clean, held setup - see
+	 * DEFAULTS.markerBoard's comment for why that std is the right yardstick here.
+	 */
+	sizeWarnLowerClearNorm: number;
+	sizeIdealLowerNorm: number;
+	sizeIdealUpperNorm: number;
+	/**
+	 * REINTRODUCED 2026-08-13 (see the prior REMOVED note in git history - it explained
+	 * why the OLD number, 0.0028, was wrong; it does not argue against having a boundary
+	 * here at all). The distinction that matters: this is NOT a re-measured detection
+	 * limit. Marker detection keeps improving well past this value (d-3p5ft at
+	 * normalizedArea=0.00389 measures 99.1% full-set, the best in the whole dataset) - so
+	 * nothing about marker legibility argues for a ceiling. What changed is that the human
+	 * has now explicitly demonstrated and stated a FRAMING limit and its cause (a
+	 * deliberate range sweep - see calibration/2026-08-13-gait-viable-range-sweep.cq2.txt
+	 * and DEFAULTS.markerBoard's comment for the measured numbers): "any closer and the
+	 * board would be out of frame or the person would be out of frame" - a walk-path/
+	 * subject-framing constraint, not a marker-detection one. This boundary remains a
+	 * PROXY for that real check (this codebase still cannot see where the subject is in
+	 * frame - person/subject detection does not exist yet); supersede it with an actual
+	 * walk-path-framing check (e.g. subject bounding box proximity to frame edges) once
+	 * that exists, rather than tightening this number further.
+	 */
+	sizeWarnUpperNorm: number;
+	/**
+	 * Hysteresis clear level for sizeWarnUpperNorm (MARKER_TOO_LARGE): once "too large" is
+	 * active, normalizedArea must drop below THIS level, not just back under
+	 * sizeWarnUpperNorm, before the nudge clears. Gap (0.00015) matches
+	 * sizeWarnLowerClearNorm's own gap - the same held-setup EWMA noise sample
+	 * (good-place-drift's std) is the only real noise measurement this codebase has near a
+	 * real threshold, and nothing suggests the noise floor differs at the opposite
+	 * boundary.
+	 */
+	sizeWarnUpperClearNorm: number;
 	diagonalRatioMin: number;
 	diagonalRatioMax: number;
 	orientationMarginRad: number;
-	/** Minimum recency-weighted fraction of the live window that must show the complete board before geometry/orientation are considered trustworthy; below this only MARKER_INCOMPLETE/MARKER_TOO_CLOSE fire. */
+	/**
+	 * Hysteresis clear level for orientationMarginRad (MARKER_WRONG_ORIENTATION): once
+	 * triggered, orientationAngleRad must drop below THIS level, not just back under
+	 * orientationMarginRad, before the warning clears. See DEFAULTS.markerBoard's comment
+	 * for the gap derivation.
+	 */
+	orientationClearMarginRad: number;
+	/** Minimum recency-weighted fraction of the live window that must show the complete board before geometry/orientation are considered trustworthy; below this the guidance falls to one of MARKER_INCOMPLETE/MARKER_TOO_CLOSE/MARKER_OBSTRUCTED depending on persistence + detected size (see aggregateMarkerBoardMetrics). Orientation is evaluated independent of this gate - see aggregateMarkerBoardMetrics's priority-order comment. */
 	minimumFullSetWeight: number;
 	/**
+	 * Hysteresis clear level for minimumFullSetWeight: once the visibility gate has
+	 * failed, weightedFullSetScore must climb above THIS level, not just back over
+	 * minimumFullSetWeight, before geometry/orientation are trusted again. Gap (0.07)
+	 * matches the roughly +/-7-point noise band measured on weightedFullSetScore's EWMA
+	 * at alpha=0.08 (the value in effect when this gap was derived - see
+	 * sampling.liveWindowRecencyWeight for why the shipped default is now 0.15) - see
+	 * DEFAULTS.markerBoard's comment for the derivation.
+	 */
+	minimumFullSetClearWeight: number;
+	/**
 	 * Recency-weighted mean normalized area of whatever markers ARE detected (see
-	 * MarkerBoardFrameMetrics.detectedMarkerAreaNorm) at or above which an incomplete
-	 * set is read as "board doesn't fit the frame" (MARKER_TOO_CLOSE) rather than
-	 * "board too far away / occluded" (MARKER_INCOMPLETE) - the two failures need
-	 * opposite user remedies (step back vs move closer), so conflating them is worse
-	 * than not distinguishing them at all. null disables the split: every incomplete
-	 * set reports MARKER_INCOMPLETE, matching pre-MARKER_TOO_CLOSE behavior. See the
-	 * DEFAULTS comment for why this ships null rather than a guessed number.
+	 * MarkerBoardFrameMetrics.detectedMarkerAreaNorm), used ONLY when the set is
+	 * incomplete AND a single marker has been persistently missing (see
+	 * MarkerPersistenceResult) - never applied to a full-set frame. Paired with
+	 * sizeWarnLowerNorm (not the ideal boundaries, which only mean anything on a full
+	 * nine-marker average) to split a persistent incomplete set into three remedies:
+	 *   - above this ceiling -> MARKER_TOO_CLOSE (board doesn't fit the frame - step back/tilt down)
+	 *   - between sizeWarnLowerNorm and this ceiling -> MARKER_OBSTRUCTED (something covering it)
+	 *   - below sizeWarnLowerNorm -> MARKER_INCOMPLETE (too far to resolve - move closer)
+	 * A scattered (non-persistent) incomplete set always reports MARKER_INCOMPLETE
+	 * regardless of size - see the DEFAULTS comment for calibration status of this value.
+	 * null disables the whole split: every incomplete set reports MARKER_INCOMPLETE,
+	 * matching pre-MARKER_TOO_CLOSE behavior.
 	 */
 	tooCloseDetectedAreaNorm: number | null;
+	/**
+	 * How long (wall-clock, not frame count - measured fps ranges 28-43 across real
+	 * recordings, so a fixed frame count would mean a different duration on different
+	 * devices) a single marker must be continuously absent before it counts as a
+	 * structural miss rather than noise. Compared against MarkerPersistenceResult, which
+	 * is tracked over the FULL take, not the ~15-frame EWMA recency window used for
+	 * full-set-rate/geometry above - at the fps actually measured on real hardware, that
+	 * window only spans 0.35-0.54s, which straddles this threshold, so a persistent miss
+	 * would sometimes fail to register as "long enough" for no reason other than the
+	 * window being too short to see it. See markerBoardCheck.ts's MarkerPersistenceTracker.
+	 */
+	persistentMissThresholdMs: number;
 }
 
 export interface SubjectPositionThresholds {
@@ -158,13 +251,75 @@ export interface CaptureQualityConfig {
 // a real marker board either — carrying a value forward is not the same as calibrating it.
 export const DEFAULTS: CaptureQualityConfig = {
 	markerBoard: {
-		// CALIBRATED 2026-08-12 (was 0.009 UNCALIBRATED, carried from 1NonVisibleMarkers.tsx
-		// HYPERPARAMETERS.minimum_marker_area). Six real iPhone recordings against the
-		// physical board, full-set frames only: d-mid 1.5m (GOOD, 93% full-set rate) has
-		// normalizedArea p5=0.00312 / median=0.00316; baseline (marginal, 79% full-set) has
-		// median=0.00229. 0.0028 sits strictly between the two - clears the good setup's
-		// worst 5%, fails the marginal one on essentially every frame.
-		minimumMarkerAreaNorm: 0.0028,
+		// 2026-08-13 "viable range" revision (supersedes the intervening "widened ideal
+		// band" revision's own comment below, now trimmed - that widening still stands,
+		// only the sizeWarnLowerNorm/sizeWarnUpperNorm numbers and rationale change here).
+		// The human recorded a deliberate range sweep -
+		// calibration/2026-08-13-gait-viable-range-sweep.cq2.txt - starting at optimal
+		// framing, moving closer to the point the board or the person would leave frame,
+		// then further to the point the board (and the person) would read too small: n=277,
+		// normalizedArea min=0.00149 p5=0.00155 median=0.00278 p95=0.00340 max=0.00344
+		// std=0.00068, 75.5% full-set rate across the whole sweep (movement included, not a
+		// held-setup number). Everything inside that measured range is framing the human
+		// explicitly judged viable. Four boundaries, low to high - see
+		// MarkerBoardThresholds's doc for the zone table:
+		//
+		// sizeWarnLowerNorm=0.0014 - MOVED (was 0.0015, which sat almost exactly ON the
+		// sweep's own demonstrated minimum viable, 0.00149 - it would have warned at
+		// framing the human called fine). 0.0014 sits just below that measured floor.
+		sizeWarnLowerNorm: 0.0014,
+		// HYSTERESIS gap = 0.00015, unchanged derivation: good-place-drift's own measured
+		// normalizedArea std at a clean, HELD setup (n=262) - the one full-set EWMA noise
+		// sample this codebase actually has near a real threshold. The sweep recording's
+		// own std (0.00068) reflects the sweep's deliberate movement, not measurement
+		// noise, so it is not the right yardstick for a noise margin. Clears at 0.00155 -
+		// which lands, coincidentally, almost exactly on the sweep's own measured p5
+		// (0.00155).
+		sizeWarnLowerClearNorm: 0.00155,
+		// sizeIdealLowerNorm=0.0018 - MOVED (was 0.00177) to keep clear daylight above the
+		// tightened sizeWarnLowerNorm/sizeWarnLowerClearNorm pair; still a comfortable
+		// interior value, not statistically fitted.
+		//
+		// sizeIdealUpperNorm=0.0032 - UNCHANGED from the 2026-08-13 "widened ideal band"
+		// revision: it spans every distance the human has demonstrated as a good setup,
+		// not just a single overlay-matched take: ideal-overlay-match (0.00197, 78.3% full-
+		// set) through good-place-drift's full range (0.00262-0.00308, 93.6%) through d-mid
+		// 1.5m's own median (0.00316, 93.0%). Full picture across all size-bearing
+		// recordings (area / full-set rate): d-far 0.00106/26%, ideal-overlay 0.00197/78%,
+		// baseline 0.00229/79%, good-place-drift 0.00275/94%, d-mid 0.00316/93%, d-3p5ft
+		// 0.00389/99% - detection improves monotonically with size across this entire
+		// range, so there is no measured point within it that argues for a narrower band.
+		// Deliberately NOT wired into aggregateMarkerBoardMetrics's pass/fail branch (see
+		// field doc) - the ideal band exists so the HUD layer
+		// (CaptureQualityHud/captureQualityGuidance.ts) can show a positive "looks good"
+		// confirmation distinct from silent-acceptable, not so the check can fire a code
+		// here.
+		sizeIdealLowerNorm: 0.0018,
+		sizeIdealUpperNorm: 0.0032,
+		// REINTRODUCED 2026-08-13: sizeWarnUpperNorm / MARKER_TOO_LARGE, at 0.0038 (was
+		// 0.0028 under the retired "overlay match" model - see the REMOVED note that used
+		// to sit here, now trimmed; its reasoning is why 0.0028 was wrong, not an argument
+		// against having a boundary here at all). The distinction that matters: this is NOT
+		// a re-measured detection limit - marker detection keeps improving past this value
+		// (d-3p5ft at normalizedArea=0.00389 measures 99.1% full-set, the best in the whole
+		// dataset). What changed is that the human has now explicitly demonstrated and
+		// stated a FRAMING limit and its cause (see the sweep recording described above):
+		// "any closer and the board would be out of frame or the person would be out of
+		// frame" - a walk-path/subject-framing constraint, not a marker-detection one. The
+		// sweep's own measured maximum viable normalizedArea is 0.00344; 0.0038 sits above
+		// that with margin. This boundary remains a PROXY for the real check (this codebase
+		// still cannot see where the subject is in frame - person/subject detection does
+		// not exist yet); supersede it with an actual walk-path-framing check (e.g. subject
+		// bounding box proximity to frame edges) once that exists, rather than tightening
+		// this number further. Unrelated to, and does not affect, tooCloseDetectedAreaNorm
+		// below (that boundary only ever applies to a persistent INCOMPLETE set, never a
+		// full-set frame - see that field's doc).
+		sizeWarnUpperNorm: 0.0038,
+		// HYSTERESIS gap = 0.00015, same derivation and same caveat as
+		// sizeWarnLowerClearNorm above (good-place-drift's held-setup std; the sweep
+		// recording's own std is movement, not noise, so it is not used here). Clears at
+		// 0.00365.
+		sizeWarnUpperClearNorm: 0.00365,
 		// WIDENED (2026-08-12) so this check can never fire. NOT calibrated - diagonalRatio
 		// is confounded by three things at once in the six recordings, none isolated:
 		// distance (0.238 at 1.5m -> 0.178 at 6ft), rotation (0.238 aligned -> 0.639 at
@@ -194,22 +349,70 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// slightly tilted, not the board. Do not tighten this margin without separating
 		// phone roll from board yaw first (e.g. a device-orientation/gravity reading).
 		orientationMarginRad: 0.45,
-		// CALIBRATED 2026-08-12 (was 0.5 UNCALIBRATED GUESS), paired with
-		// sampling.liveWindowRecencyWeight below - see that field's comment for the joint
-		// derivation and calibrate-script evidence.
-		minimumFullSetWeight: 0.4,
-		// NOT CALIBRATED, intentionally disabled (2026-08-12) - see the MARKER_TOO_CLOSE
-		// branch in aggregateMarkerBoardMetrics (markerBoardCheck.ts) for how this is used.
-		// The six committed recordings cannot supply this number: d-near/2ft never reaches a
-		// full marker set (0/236 frames), and the recorder version that captured all six runs
-		// only computed/stored normalizedArea when isFullSet was true - so no per-marker size
-		// was ever recorded for ANY of d-near's 236 incomplete-set frames, nor d-far's 206
-		// incomplete-set frames. There is no real data in this repo to derive a boundary from
-		// - see MarkerBoardFrameMetrics.detectedMarkerAreaNorm, which now computes this
-		// live/going forward. Leaving this null keeps every incomplete set reporting
-		// MARKER_INCOMPLETE (unchanged behavior) until a re-capture with an updated recorder
-		// records detectedMarkerAreaNorm on partial-set frames too.
-		tooCloseDetectedAreaNorm: null,
+		// HYSTERESIS gap = 0.05 rad. No recording in this dataset sits near the 0.45
+		// boundary itself (aligned readings run 0.11-0.28 rad including the noisiest
+		// aligned recording, back-away; misaligned readings start at 0.77) so there is no
+		// direct "noise straddling this exact threshold" sample the way there is for size
+		// and full-set rate. Instead the gap is sized off the largest orientationAngleRad
+		// std measured on any clean, full-set-dominant recording - baseline's 0.01628 rad
+		// - at roughly 3x that value: enough to absorb realistic phone-roll jitter near the
+		// boundary without eating meaningfully into the >0.6 rad separation between aligned
+		// and misaligned readings that orientationMarginRad itself relies on (see that
+		// field's doc). Revisit if a future recording actually sits near 0.40-0.45 rad.
+		orientationClearMarginRad: 0.4,
+		// SPEC-GIVEN 2026-08-13 (down from 0.90, itself SPEC-GIVEN 2026-08-12 - see git
+		// history). 0.90 produced 18 flaps replaying the overlay-match recording (a GOOD
+		// setup by the product's own framing spec) because its raw full-set rate is only
+		// 78.3% - nowhere near 0.90. 78.3% full-set is the DESIGNED OPERATING POINT at this
+		// framing, not a user error: only nine markers packed tightly at the overlay's
+		// specified distance, so momentary single-marker dropout (see marker 2's 18.5%
+		// miss rate, longest run 3 frames) is expected, not a defect. 0.60 clears the ideal
+		// recording's 78.3% raw rate by ~18 points - comfortably outside the +/-7-point
+		// EWMA noise band alpha=0.08 produces on that recording - while d-far 6ft's 26.2%
+		// still fails decisively. This also fixes a real regression at 0.90: rot-90 (80.0%
+		// raw full-set rate) failed the visibility gate before orientation was ever
+		// evaluated, so a rotated board reported as a visibility problem instead of an
+		// orientation one. See aggregateMarkerBoardMetrics's priority-order comment for the
+		// fix (orientation now evaluated independent of this gate, not behind it).
+		minimumFullSetWeight: 0.6,
+		// HYSTERESIS gap = 0.07 (7 points), directly matching the +/-7-point EWMA noise
+		// band on weightedFullSetScore that minimumFullSetWeight's own doc above already
+		// measured. Once the visibility gate fails, weightedFullSetScore must climb to 0.67
+		// before geometry/orientation are trusted again. MEASURED CONTRIBUTION (replaying
+		// ideal-overlay-match, the file this gap most directly affects): most of the flap
+		// reduction here comes from liveWindowRecencyWeight going back to 0.15 (see that
+		// field's doc - 42 flaps at the old alpha with no hysteresis down to 14 at the new
+		// alpha with no hysteresis), with this gap contributing a further, smaller cut on
+		// top (14 -> 13) once alpha is fixed. Both matter and neither alone reaches the
+		// other's result - see sampling.liveWindowRecencyWeight's doc for the full
+		// alpha-sweep numbers this claim is based on.
+		minimumFullSetClearWeight: 0.67,
+		// UNCALIBRATED (interpolated 2026-08-13) - a good full board at 3.5ft reads
+		// detectedMarkerAreaNorm ~0.0039; the 3ft-cropped recording (which never reaches a
+		// full set) reads ~0.0052. 0.0045 sits between them. Paired with sizeWarnLowerNorm
+		// (0.0015, not the ideal boundaries - see that field's doc) as the other
+		// end of the split: only applies when the set is incomplete AND persistent (see
+		// MarkerPersistenceResult) -
+		//   > 0.0045                  -> MARKER_TOO_CLOSE (board doesn't fit the frame)
+		//   between 0.0015 and this   -> MARKER_OBSTRUCTED (something covering it) - this
+		//                                middle band is UNCALIBRATED and effectively
+		//                                interpolated air: no recording in this repo shows
+		//                                a partially-occluded board at good distance, so
+		//                                nothing here has been measured against a real
+		//                                occlusion. Treat MARKER_OBSTRUCTED as a reasonable
+		//                                guess, not a validated boundary, until that
+		//                                recording exists.
+		//   < 0.0015                  -> MARKER_INCOMPLETE (too far to resolve)
+		tooCloseDetectedAreaNorm: 0.0045,
+		// SPEC-GIVEN 2026-08-13 ("~0.5 seconds" per task). Not fitted to a specific
+		// boundary recording - chosen because the measured separation is wide either side
+		// of it: good setups (d-mid, d-3p5ft-good) peak at 1-2 consecutive frames missing
+		// for any single marker (including marker 2, the weakest - see MARKER_BOARD's
+		// corners-are-weakest note), while the structural failures (d-3ft-cropped,
+		// d-near-2ft) run 200+ consecutive frames missing - effectively permanent for the
+		// take. 500ms comfortably clears the former and is trivially cleared by the
+		// latter; nothing in this dataset pins down a tighter number.
+		persistentMissThresholdMs: 500,
 	},
 	subjectPosition: {
 		displacementNormThreshold: 0.01, // UNCALIBRATED - carried from T_disp_norm (fraction of frame diagonal)
@@ -240,21 +443,23 @@ export const DEFAULTS: CaptureQualityConfig = {
 	},
 	sampling: {
 		liveWindowFrameCount: 15, // UNCALIBRATED GUESS - rolling recency-weighted window size for pre-recording (live preview) checks
-		// CALIBRATED 2026-08-12 (was 0.7 UNCALIBRATED GUESS). Verified with
-		// `npm run calibrate` replaying all six real recordings through the actual
-		// aggregateMarkerBoardMetrics (markerBoardCheck.ts) at the calibrated thresholds
-		// above (area 0.0028, orientation 0.45, diagonal disabled) paired with
-		// markerBoard.minimumFullSetWeight=0.4: alpha=0.15 is the lowest-total-flap
-		// combination (26 indicator-state flaps summed over baseline/d-far/d-near/
-		// rot-slight/rot-90's full replays) found by sweeping alpha in [0.03..0.7] x
-		// minimumFullSetWeight in [0.3..0.6] that still leaves d-mid (GOOD, 1.5m) at
-		// EXACTLY zero fired codes and zero flaps across its full 171-step replay, while
-		// d-far (bad, 26% full-set rate) fires a warning on 100% of its 279 steps. The
-		// task's own arithmetic starting point (alpha~0.1, weight 0.5) also keeps d-mid
-		// clean but flaps more (baseline+d-far+d-near+rot-slight+rot-90 sum to 60 flaps
-		// vs 26) - 0.15/0.4 was chosen over it for lower live-indicator flicker, not
-		// because 0.1/0.5 was wrong. Do not change either value without re-running the
-		// sweep against calibration/*.cq1.txt.
+		// REVERTED 2026-08-13 (back to 0.15, was LOOSENED to 0.08 earlier the same day - see
+		// git history) now that hysteresis (see MarkerBoardHysteresisState /
+		// applyHysteresis) is the mechanism actually responsible for flapping resistance.
+		// The 0.08 loosening was reasoned about backwards: a SMALLER alpha means MORE
+		// smoothing (longer effective averaging span), and at this window length that
+		// longer span lets marker 2's frequent-but-short dropouts (see the ideal-overlay
+		// recording's 18.5% miss rate, scattered in bursts up to 3 frames) compound within
+		// the average instead of being smoothed away - measured directly: replaying
+		// ideal-overlay-match with hysteresis held constant, alpha=0.08 produces 40 flaps,
+		// alpha=0.15 produces 13 (alpha=0.2 is worse again, at 21 - this is a real optimum,
+		// not "more alpha is always better"). The same reversal shows on good-place-drift
+		// (3 flaps at 0.08, 1 at 0.15) and baseline (47 at 0.08, 16 at 0.15), with no
+		// classification change on any recording that must still warn (d-far, d-near,
+		// 3ft-cropped, rot-slight, rot-90 all keep the same dominant code and flap count).
+		// See markerBoardCheck.test.ts's end-to-end classification suite for the pinned,
+		// measured flap counts this combination produces. Do not change either this or the
+		// hysteresis clear-level fields without re-running that replay.
 		liveWindowRecencyWeight: 0.15,
 		postRecordingSampleFraction: 0.5, // spec-given: sample the middle 50% of the recorded video for most post-recording checks
 		postRecordingSampleWindow: "middle", // spec-given positioning convention; not every check will use it (e.g. VIDEO_TOO_SHORT/VIDEO_TOO_LONG need the full timeline, not a sampled window)

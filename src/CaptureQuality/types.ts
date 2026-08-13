@@ -20,8 +20,22 @@ export const CAPTURE_QUALITY_ISSUE_CODES = [
 	"MARKER_INCOMPLETE",
 	"MARKER_TOO_CLOSE",
 	"MARKER_TOO_SMALL",
+	// REINTRODUCED 2026-08-13 behind a measured boundary (sizeWarnUpperNorm=0.0038 - see
+	// captureQualityConfig.ts's DEFAULTS.markerBoard comment). Important distinction: this
+	// is the human's own stated FRAMING limit ("any closer and the board or the person
+	// would be out of frame"), not a re-measured detection limit - marker detection keeps
+	// improving well past this value. It remains a proxy for a walk-path/subject-framing
+	// check this codebase cannot yet perform directly (no person detection); supersede it
+	// with that real check rather than tightening this number further.
+	"MARKER_TOO_LARGE",
 	"MARKER_SKEWED",
 	"MARKER_WRONG_ORIENTATION",
+	// Fires when a single marker (any of the nine - see markerBoardCheck.ts's
+	// persistence tracker) has been continuously absent past the "structural" time
+	// threshold at a marker size that is neither too-close-cropped nor too-far-to-resolve
+	// - i.e. something is physically covering it. Distinct from MARKER_INCOMPLETE, which
+	// covers scattered/noisy dropout with no sustained single-marker pattern.
+	"MARKER_OBSTRUCTED",
 	"SUBJECT_NOT_DETECTED",
 	"SUBJECT_NOT_STATIONARY",
 	"SUBJECT_NOT_AT_START_LINE",
