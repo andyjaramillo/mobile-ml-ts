@@ -2,45 +2,36 @@
 // it is also importable from the offline scripts/calibrate/ CLI via the same code the
 // on-device HUD uses to build an export string - one encoder, one decoder, no drift.
 //
-// EXPORT FORMAT (v2, "CQ2"): the recording device is a phone with no file system access
+// EXPORT FORMAT (v3, "CQ3"): the recording device is a phone with no file system access
 // the user can reach - the only path off the device is copy -> paste into a chat
 // message. That forces a single-line, character-budgeted format. The parser
-// (scripts/calibrate/parse.ts) must keep accepting v1 "CQ1" lines - the six committed
-// calibration/*.cq1.txt recordings are that format and their regression tests must keep
-// passing - so CQ2 is a new line prefix, not a v1 rewrite.
+// (scripts/calibrate/parse.ts) still accepts CQ1 and CQ2 lines, since the committed
+// calibration recordings are in those formats, so CQ3 is a new prefix, not a rewrite.
 //
-//   CQ2|<tag>|n=<count>|stride=<stride>|fps=<meanFps>|res=<W>x<H>|sc=<a>,<d>,<r>|<samples>|lg=<cols>x<rows>|ln=<lightCount>|lsc=<lumaExp>,<contrastExp>|<lightSamples>
+//   CQ3|<tag>|n=<count>|stride=<stride>|fps=<meanFps>|res=<W>x<H>|sc=<a>,<d>,<r>|<samples>|lg=<cols>x<rows>|ln=<lightCount>|lsc=<lumaExp>,<contrastExp>,<roiExp>|<lightSamples>
 //
-// <samples> is `;`-joined `<bitmask>:<area>:<diag>:<rot>:<detArea>` tokens, oldest first
-// - the same four fields CQ1 had, plus a 5th: detArea (MarkerBoardFrameMetrics.
-// detectedMarkerAreaNorm - mean area over WHATEVER markers were detected, independent of
-// full-set status). This closes the MARKER_TOO_CLOSE calibration gap: CQ1 only stored
-// area on full-set frames, so no recording ever captured marker size on an incomplete
-// set - and "too close" is by definition a recording that never reaches a full set (see
-// captureQualityConfig.ts tooCloseDetectedAreaNorm). detArea reuses the AREA_SCALE
-// exponent (sc's first number) rather than needing a 4th sc slot: it is the same
-// metric - mean per-marker normalized bbox area - just averaged over a different marker
-// subset, so it has the same magnitude and precision needs as `area`.
+// <samples> is `;`-joined `<bitmask>:<area>:<diag>:<rot>:<detArea>` tokens, oldest first,
+// unchanged from CQ2.
 //
-// <lightSamples> is `;`-joined tokens of 12 colon-separated integers: six summary stats
-// (min, p25, median, p75, max, mean) of the per-cell MEAN LUMA distribution, then the
-// same six stats of the per-cell luma STANDARD DEVIATION (contrast) distribution, for
-// one sampled tick. Deliberately RAW distribution stats, not threshold-derived - the
-// thresholds (captureQualityConfig.ts LightingThresholds) are exactly what calibration
-// is trying to fit, so anything already run through them would be useless offline. Six
-// points (not all 64 grid cells) is a size/precision tradeoff: recording every cell for
-// every lighting sample would be ~15x the per-sample cost for a single recording's worth
-// of calibration value, whereas 6 quantile markers already let scripts/calibrate
-// linearly interpolate an approximate "fraction of cells below X" for arbitrary X (see
-// scripts/calibrate/lightingReplay.ts) - not exact, but enough to sweep threshold
-// candidates, which is this recorder's only job. Recorded far more sparsely than marker
-// samples (every LIGHTING_SAMPLE_EVERY_N-th marker sample, not every tick) because
-// lighting varies slowly compared to marker geometry - per-frame lighting samples would
-// blow the size budget for information that barely changes frame to frame.
+// <lightSamples> is `;`-joined tokens of 17 integers: six summary stats (min, p25,
+// median, p75, max, mean) of the per-cell MEAN LUMA distribution, the same six of the
+// per-cell luma STANDARD DEVIATION, then the ROI (x/y/width/height, quantized by the 3rd
+// lsc= exponent) and a roiSourceCode (0=detected, 1=last-known, 2=default). The ROI
+// fields are why CQ3 is not backward-compatible with CQ2: CQ2's distributions were
+// measured over the whole frame, a materially different measurement, so the two must
+// never be pooled (see parse.ts's lightingScope).
+//
+// The distribution stats are deliberately RAW, not threshold-derived - the thresholds are
+// exactly what calibration is trying to fit. Six quantile points rather than every cell
+// is a size tradeoff: enough for lightingReplay.ts to interpolate an approximate
+// "fraction of cells below X" when sweeping candidates, which is this recorder's only
+// job. Lighting is sampled every LIGHTING_SAMPLE_EVERY_N-th marker sample because it
+// varies slowly, and per-tick samples would blow the size budget.
 
 import { MARKER_BOARD, LIGHTING_GRID } from "../CaptureQuality/captureQualityConfig";
+import type { LightingRoiRect } from "../CaptureQuality/captureQualityConfig";
 import type { MarkerBoardFrameMetrics } from "../CaptureQuality/markerBoardCheck";
-import type { LowLightFrameMetrics } from "../CaptureQuality/lowLightCheck";
+import type { LowLightFrameMetrics, LowLightRoiSource } from "../CaptureQuality/lowLightCheck";
 
 const EXPECTED_MARKER_IDS = MARKER_BOARD.expectedMarkerIds;
 
@@ -63,6 +54,15 @@ const LUMA_SCALE_EXP = 1;
 const CONTRAST_SCALE_EXP = 1;
 const LUMA_SCALE = 10 ** LUMA_SCALE_EXP;
 const CONTRAST_SCALE = 10 ** CONTRAST_SCALE_EXP;
+
+// ROI fields are normalized [0,1] fractions - 3 decimal digits (1000ths, ~0.5px on the
+// ~128px-long-edge lighting canvas) is more precision than the canvas itself carries, so
+// this is not spending digits the source data can't support the way a larger exponent
+// would.
+const ROI_SCALE_EXP = 3;
+const ROI_SCALE = 10 ** ROI_SCALE_EXP;
+
+const ROI_SOURCE_CODE: Record<LowLightRoiSource, number> = { detected: 0, "last-known": 1, default: 2 };
 
 // Keeps a realistic worst-case export (long tag, every sample fully populated) safely
 // under MAX_EXPORT_CHARS without relying on the truncation safety net below.
@@ -100,6 +100,8 @@ export interface DistributionSummary {
 export interface CaptureRecorderLightingSample {
 	luma: DistributionSummary;
 	contrast: DistributionSummary;
+	roi: LightingRoiRect;
+	roiSource: LowLightRoiSource;
 }
 
 export interface CaptureRecorderState {
@@ -195,6 +197,12 @@ function summarizeCellValues(values: readonly (number | null)[]): DistributionSu
 	};
 }
 
+export interface CaptureRecorderLightingInput {
+	metrics: LowLightFrameMetrics;
+	roi: LightingRoiRect;
+	roiSource: LowLightRoiSource;
+}
+
 export interface CaptureRecorderFrameInput {
 	fps: number;
 	frameWidth: number;
@@ -202,12 +210,13 @@ export interface CaptureRecorderFrameInput {
 	/** Raw single-frame metrics from evaluateMarkerBoardFrame - reused, not recomputed, so the recorder never diverges from the real check's notion of "computable". */
 	metrics: MarkerBoardFrameMetrics;
 	/**
-	 * Raw single-frame metrics from evaluateLowLightFrame, for the SAME tick, from the
-	 * separate small unfiltered lighting canvas (see RealTimeProcessor.tsx). Optional/
-	 * nullable because the aruco tick loop always has marker metrics but may not always
-	 * have a fresh lighting frame ready (e.g. lighting canvas not yet sized).
+	 * Result of evaluateLatestLowLightFrame (metrics + the ROI it was measured against +
+	 * which selection path produced that ROI), for the SAME tick, from the separate small
+	 * unfiltered lighting canvas (see RealTimeProcessor.tsx). Optional/nullable because
+	 * the aruco tick loop always has marker metrics but may not always have a fresh
+	 * lighting frame ready (e.g. lighting canvas not yet sized).
 	 */
-	lighting?: LowLightFrameMetrics | null;
+	lighting?: CaptureRecorderLightingInput | null;
 }
 
 /**
@@ -244,10 +253,10 @@ export function recordCaptureFrame(state: CaptureRecorderState, input: CaptureRe
 	// after the push above), not raw ticks - "every 10th sampled frame" per the module
 	// header, so this automatically stays proportional even after `stride` doubles.
 	if (input.lighting && state.samples.length % LIGHTING_SAMPLE_EVERY_N === 0) {
-		const luma = summarizeCellValues(input.lighting.cellMeans);
-		const contrast = summarizeCellValues(input.lighting.cellContrasts);
+		const luma = summarizeCellValues(input.lighting.metrics.cellMeans);
+		const contrast = summarizeCellValues(input.lighting.metrics.cellContrasts);
 		if (luma && contrast) {
-			state.lightingSamples.push({ luma, contrast });
+			state.lightingSamples.push({ luma, contrast, roi: input.lighting.roi, roiSource: input.lighting.roiSource });
 			if (state.lightingSamples.length > MAX_LIGHTING_SAMPLES) {
 				state.lightingSamples = state.lightingSamples.filter((_, i) => i % 2 === 0);
 			}
@@ -297,10 +306,14 @@ function buildLine(
 		)
 		.join(";");
 	const lightingPayload = lightingSamples
-		.map((s) => `${encodeDistribution(s.luma, LUMA_SCALE)}:${encodeDistribution(s.contrast, CONTRAST_SCALE)}`)
+		.map((s) => {
+			const roi = s.roi;
+			const roiTokens = [roi.xNorm, roi.yNorm, roi.widthNorm, roi.heightNorm].map((v) => Math.round(v * ROI_SCALE));
+			return `${encodeDistribution(s.luma, LUMA_SCALE)}:${encodeDistribution(s.contrast, CONTRAST_SCALE)}:${roiTokens.join(":")}:${ROI_SOURCE_CODE[s.roiSource]}`;
+		})
 		.join(";");
 	return [
-		"CQ2",
+		"CQ3",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
@@ -310,7 +323,7 @@ function buildLine(
 		payload,
 		`lg=${LIGHTING_GRID.cols}x${LIGHTING_GRID.rows}`,
 		`ln=${lightingSamples.length}`,
-		`lsc=${LUMA_SCALE_EXP},${CONTRAST_SCALE_EXP}`,
+		`lsc=${LUMA_SCALE_EXP},${CONTRAST_SCALE_EXP},${ROI_SCALE_EXP}`,
 		lightingPayload,
 	].join("|");
 }

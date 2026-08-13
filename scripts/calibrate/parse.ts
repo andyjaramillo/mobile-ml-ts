@@ -1,17 +1,19 @@
-// Parser for the CQ1/CQ2 compact single-line capture-quality exports (see
+// Parser for the CQ1/CQ2/CQ3 compact single-line capture-quality exports (see
 // src/CaptureQualityHud/captureRecorder.ts for the format and the encoder this mirrors).
-// A pasted file may contain more than one recognized line (e.g. several messages
-// concatenated into one paste, or a mix of old CQ1 and new CQ2 recordings); every
-// recognized line becomes its own ParsedCaptureRecording. CQ1 support is permanent, not
-// a migration shim: the six committed calibration/*.cq1.txt recordings are CQ1 and their
-// regression tests must keep passing indefinitely.
+// A pasted file may contain more than one recognized line; every recognized line becomes
+// its own ParsedCaptureRecording. CQ1/CQ2 support is permanent, not a migration shim -
+// the committed calibration recordings are in those formats.
+//
+// CQ2's lighting distributions were measured over the whole frame, CQ3's over the
+// marker-board ROI. These are not the same measurement and must never be pooled - see
+// ParsedCaptureRecording.lightingScope.
 
 export interface ParsedCaptureSample {
 	bitmask: number;
 	area: number | null;
 	diag: number | null;
 	rot: number | null;
-	/** CQ2 only - MarkerBoardFrameMetrics.detectedMarkerAreaNorm. Always null for a CQ1 line (the field did not exist in that format). */
+	/** CQ2/CQ3 only - MarkerBoardFrameMetrics.detectedMarkerAreaNorm. Always null for a CQ1 line (the field did not exist in that format). */
 	detArea: number | null;
 }
 
@@ -24,14 +26,31 @@ export interface ParsedLightingDistribution {
 	mean: number;
 }
 
+/** Re-declared rather than imported from lowLightCheck.ts so this offline tool consumes only the export format, not the live check's types. */
+export type ParsedRoiSource = "detected" | "last-known" | "default";
+
+export interface ParsedRoiRect {
+	xNorm: number;
+	yNorm: number;
+	widthNorm: number;
+	heightNorm: number;
+}
+
 export interface ParsedLightingSample {
 	luma: ParsedLightingDistribution;
 	contrast: ParsedLightingDistribution;
+	/** CQ3 only - null for a CQ2 line (whole-frame; no ROI was ever measured). */
+	roi: ParsedRoiRect | null;
+	/** CQ3 only - null for a CQ2 line. */
+	roiSource: ParsedRoiSource | null;
 }
+
+/** What region a recording's lightingSamples were measured over - branch on this before comparing lighting stats across recordings. "none" also covers a CQ2/CQ3 line that captured zero lighting samples. */
+export type LightingScope = "none" | "whole-frame" | "roi";
 
 export interface ParsedCaptureRecording {
 	sourceLabel: string;
-	formatVersion: 1 | 2;
+	formatVersion: 1 | 2 | 3;
 	scenarioTag: string;
 	declaredSampleCount: number;
 	stride: number;
@@ -40,10 +59,12 @@ export interface ParsedCaptureRecording {
 	frameHeight: number;
 	scaleExponents: readonly [number, number, number];
 	samples: ParsedCaptureSample[];
-	/** CQ2 only - empty for a CQ1 line. */
+	/** CQ2/CQ3 only - null for a CQ1 line. */
 	lightingGrid: { cols: number; rows: number } | null;
-	lightingScaleExponents: readonly [number, number] | null;
+	/** CQ2: [lumaExp, contrastExp]. CQ3: [lumaExp, contrastExp, roiExp]. Null for a CQ1 line. */
+	lightingScaleExponents: readonly number[] | null;
 	lightingSamples: ParsedLightingSample[];
+	lightingScope: LightingScope;
 }
 
 function parseKeyInt(token: string, key: string, sourceLabel: string): number {
@@ -115,7 +136,8 @@ function parseLightingDistributionToken(
 	return { min, p25, median, p75, max, mean };
 }
 
-function parseLightingSampleToken(
+/** CQ2 lighting token: 12 ints, whole-frame, no ROI - roi/roiSource are always null. */
+function parseCq2LightingSampleToken(
 	token: string,
 	index: number,
 	scaleExponents: readonly [number, number],
@@ -123,13 +145,49 @@ function parseLightingSampleToken(
 ): ParsedLightingSample {
 	const parts = token.split(":");
 	if (parts.length !== 12) {
-		throw new Error(`${sourceLabel}: malformed lighting sample at index ${index}: "${token}" (expected 12 colon-separated integers)`);
+		throw new Error(`${sourceLabel}: malformed CQ2 lighting sample at index ${index}: "${token}" (expected 12 colon-separated integers)`);
 	}
 	const lumaScale = 10 ** scaleExponents[0];
 	const contrastScale = 10 ** scaleExponents[1];
 	return {
 		luma: parseLightingDistributionToken(parts, 0, lumaScale, sourceLabel, index),
 		contrast: parseLightingDistributionToken(parts, 6, contrastScale, sourceLabel, index),
+		roi: null,
+		roiSource: null,
+	};
+}
+
+const ROI_SOURCE_BY_CODE: readonly ParsedRoiSource[] = ["detected", "last-known", "default"];
+
+/** CQ3 lighting token: 17 ints - the same 6+6 luma/contrast distributions, plus roiXNorm/roiYNorm/roiWidthNorm/roiHeightNorm and a roiSourceCode (0/1/2 - see ROI_SOURCE_BY_CODE). */
+function parseCq3LightingSampleToken(
+	token: string,
+	index: number,
+	scaleExponents: readonly [number, number, number],
+	sourceLabel: string
+): ParsedLightingSample {
+	const parts = token.split(":");
+	if (parts.length !== 17) {
+		throw new Error(`${sourceLabel}: malformed CQ3 lighting sample at index ${index}: "${token}" (expected 17 colon-separated integers)`);
+	}
+	const lumaScale = 10 ** scaleExponents[0];
+	const contrastScale = 10 ** scaleExponents[1];
+	const roiScale = 10 ** scaleExponents[2];
+
+	const roiNums = parts.slice(12, 16).map(Number);
+	const sourceCode = Number(parts[16]);
+	if (roiNums.length !== 4 || roiNums.some((n) => !Number.isFinite(n)) || !Number.isInteger(sourceCode)) {
+		throw new Error(`${sourceLabel}: malformed CQ3 ROI fields at sample ${index}: "${token}"`);
+	}
+	const [xNorm, yNorm, widthNorm, heightNorm] = roiNums.map((n) => n / roiScale);
+	const roiSource = ROI_SOURCE_BY_CODE[sourceCode];
+	if (!roiSource) throw new Error(`${sourceLabel}: unrecognized ROI source code ${sourceCode} at sample ${index}`);
+
+	return {
+		luma: parseLightingDistributionToken(parts, 0, lumaScale, sourceLabel, index),
+		contrast: parseLightingDistributionToken(parts, 6, contrastScale, sourceLabel, index),
+		roi: { xNorm, yNorm, widthNorm, heightNorm },
+		roiSource,
 	};
 }
 
@@ -169,6 +227,7 @@ function parseCq1Line(line: string, sourceLabel: string): ParsedCaptureRecording
 		lightingGrid: null,
 		lightingScaleExponents: null,
 		lightingSamples: [],
+		lightingScope: "none",
 	};
 }
 
@@ -206,7 +265,7 @@ function parseCq2Line(line: string, sourceLabel: string): ParsedCaptureRecording
 	const lightingSamples =
 		lightingPayload.length === 0
 			? []
-			: lightingPayload.split(";").map((tok, i) => parseLightingSampleToken(tok, i, lightingScaleExponents, sourceLabel));
+			: lightingPayload.split(";").map((tok, i) => parseCq2LightingSampleToken(tok, i, lightingScaleExponents, sourceLabel));
 	if (lightingSamples.length !== declaredLightingCount) {
 		console.warn(
 			`${sourceLabel}: declared ln=${declaredLightingCount} but lighting payload has ${lightingSamples.length} samples - using the actual count`
@@ -227,19 +286,81 @@ function parseCq2Line(line: string, sourceLabel: string): ParsedCaptureRecording
 		lightingGrid,
 		lightingScaleExponents,
 		lightingSamples,
+		lightingScope: lightingSamples.length > 0 ? "whole-frame" : "none",
 	};
 }
 
-/** Parses one CQ1 or CQ2 line. Throws with a message identifying sourceLabel on any malformed token. */
-export function parseCompactLine(line: string, sourceLabel: string): ParsedCaptureRecording {
-	if (line.startsWith("CQ2|")) return parseCq2Line(line, sourceLabel);
-	if (line.startsWith("CQ1|")) return parseCq1Line(line, sourceLabel);
-	throw new Error(`${sourceLabel}: not a recognized CQ1/CQ2 export line`);
+function parseCq3Line(line: string, sourceLabel: string): ParsedCaptureRecording {
+	const tokens = line.split("|");
+	if (tokens.length !== 12 || tokens[0] !== "CQ3") {
+		throw new Error(`${sourceLabel}: not a recognized CQ3 export line (expected 12 "|"-separated fields)`);
+	}
+	const [, scenarioTag, nToken, strideToken, fpsToken, resToken, scToken, payload, lgToken, lnToken, lscToken, lightingPayload] =
+		tokens;
+
+	const declaredSampleCount = parseKeyInt(nToken, "n", sourceLabel);
+	const stride = parseKeyInt(strideToken, "stride", sourceLabel);
+	const fpsMean = parseKeyInt(fpsToken, "fps", sourceLabel);
+	const { width: frameWidth, height: frameHeight } = parseResToken(resToken, sourceLabel);
+	const scaleExponents = parseScToken(scToken, sourceLabel);
+
+	// CQ3's marker section is identical to CQ2's; only the lighting format changed.
+	const samples = payload.length === 0 ? [] : payload.split(";").map((tok, i) => parseCq2SampleToken(tok, i, sourceLabel));
+	if (samples.length !== declaredSampleCount) {
+		console.warn(
+			`${sourceLabel}: declared n=${declaredSampleCount} but payload has ${samples.length} samples - using the actual count`
+		);
+	}
+
+	const lgMatch = /^lg=(\d+)x(\d+)$/.exec(lgToken);
+	if (!lgMatch) throw new Error(`${sourceLabel}: malformed "lg=" token: "${lgToken}"`);
+	const lightingGrid = { cols: Number(lgMatch[1]), rows: Number(lgMatch[2]) };
+
+	const declaredLightingCount = parseKeyInt(lnToken, "ln", sourceLabel);
+
+	const lscMatch = /^lsc=(\d+),(\d+),(\d+)$/.exec(lscToken);
+	if (!lscMatch) throw new Error(`${sourceLabel}: malformed "lsc=" token: "${lscToken}"`);
+	const lightingScaleExponents: [number, number, number] = [Number(lscMatch[1]), Number(lscMatch[2]), Number(lscMatch[3])];
+
+	const lightingSamples =
+		lightingPayload.length === 0
+			? []
+			: lightingPayload.split(";").map((tok, i) => parseCq3LightingSampleToken(tok, i, lightingScaleExponents, sourceLabel));
+	if (lightingSamples.length !== declaredLightingCount) {
+		console.warn(
+			`${sourceLabel}: declared ln=${declaredLightingCount} but lighting payload has ${lightingSamples.length} samples - using the actual count`
+		);
+	}
+
+	return {
+		sourceLabel,
+		formatVersion: 3,
+		scenarioTag,
+		declaredSampleCount,
+		stride,
+		fpsMean,
+		frameWidth,
+		frameHeight,
+		scaleExponents,
+		samples,
+		lightingGrid,
+		lightingScaleExponents,
+		lightingSamples,
+		lightingScope: lightingSamples.length > 0 ? "roi" : "none",
+	};
 }
 
-/** Parses every CQ1/CQ2 line found in a file's text, skipping blank lines and anything not starting with "CQ1|"/"CQ2|". */
+/** Parses one CQ1, CQ2, or CQ3 line. Throws with a message identifying sourceLabel on any malformed token. */
+export function parseCompactLine(line: string, sourceLabel: string): ParsedCaptureRecording {
+	if (line.startsWith("CQ3|")) return parseCq3Line(line, sourceLabel);
+	if (line.startsWith("CQ2|")) return parseCq2Line(line, sourceLabel);
+	if (line.startsWith("CQ1|")) return parseCq1Line(line, sourceLabel);
+	throw new Error(`${sourceLabel}: not a recognized CQ1/CQ2/CQ3 export line`);
+}
+
+/** Parses every CQ1/CQ2/CQ3 line found in a file's text, skipping blank lines and anything not starting with "CQ1|"/"CQ2|"/"CQ3|". */
 export function parseCompactExportFile(sourceLabel: string, text: string): ParsedCaptureRecording[] {
 	const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-	const cqLines = lines.filter((l) => l.startsWith("CQ1|") || l.startsWith("CQ2|"));
+	const cqLines = lines.filter((l) => l.startsWith("CQ1|") || l.startsWith("CQ2|") || l.startsWith("CQ3|"));
 	return cqLines.map((line, i) => parseCompactLine(line, cqLines.length > 1 ? `${sourceLabel}#${i + 1}` : sourceLabel));
 }

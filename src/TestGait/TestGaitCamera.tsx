@@ -19,11 +19,10 @@ import {
 } from "../CaptureQuality/markerBoardCheck";
 import {
 	pushLowLightFrame,
-	evaluateLowLightFrame,
+	evaluateLatestLowLightFrame,
 	evaluateLowLightWindowAggregate,
 } from "../CaptureQuality/lowLightCheck";
-import type { LowLightFrameMetrics } from "../CaptureQuality/lowLightCheck";
-import type { CaptureQualityFrameSample } from "../CaptureQuality/types";
+import type { CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "../CaptureQuality/types";
 import { recordCaptureFrame } from "../CaptureQualityHud/captureRecorder";
 import type { CaptureRecorderState } from "../CaptureQualityHud/captureRecorder";
 import type { CaptureQualitySession } from "./useCaptureQualitySession";
@@ -36,7 +35,14 @@ import {
 	HUD_UPDATE_EVERY_N_FRAMES,
 	CAMERA_READY_STABILITY_DELAY_MS,
 } from "./testGaitConfig";
-import gaitOverlaySrc from "../assets/gait-clinic-animated-overlay.apng";
+
+// Served from the CDN rather than bundled: the .apng is a CurveAssure product asset and
+// this repo is public, so it is gitignored and a build-time import breaks any fresh clone.
+// Same URL shape as Website's mobileAssessmentAssetUrl (MobileSchema/Graphic.ts). The
+// bucket gates public reads on an aws:Referer allowlist, so the serving origin must be on
+// it - see the repo README.
+const gaitOverlaySrc =
+	"https://s3.amazonaws.com/curveassure-redirect/mobile-assessment-assets/clinic-assessments/gait/gait-clinic-animated-overlay.apng";
 
 const EXPECTED_MARKER_IDS = new Set(MARKER_BOARD.expectedMarkerIds);
 
@@ -55,6 +61,24 @@ function computeLightingCanvasSize(videoWidth: number, videoHeight: number): { w
 		return { width: LIGHTING_CANVAS_LONG_EDGE, height: Math.max(LIGHTING_CANVAS_MIN_SHORT_EDGE, Math.round(LIGHTING_CANVAS_LONG_EDGE / aspect)) };
 	}
 	return { width: Math.max(LIGHTING_CANVAS_MIN_SHORT_EDGE, Math.round(LIGHTING_CANVAS_LONG_EDGE * aspect)), height: LIGHTING_CANVAS_LONG_EDGE };
+}
+
+// lowLightCheck.ts requires marker corners in the same pixel space as the frame they are
+// attached to. Duplicated from RealTimeProcessor.tsx for the same reason as
+// computeLightingCanvasSize above.
+function rescaleMarkersToLightingCanvas(
+	markers: readonly CaptureQualityDetectedMarker[],
+	fromWidth: number,
+	fromHeight: number,
+	toWidth: number,
+	toHeight: number
+): CaptureQualityDetectedMarker[] {
+	const scaleX = toWidth / fromWidth;
+	const scaleY = toHeight / fromHeight;
+	return markers.map((m) => ({
+		id: m.id,
+		corners: m.corners.map((c) => ({ x: c.x * scaleX, y: c.y * scaleY })),
+	}));
 }
 
 interface VideoDimensions {
@@ -431,7 +455,7 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 					};
 					pushMarkerBoardFrame(session.markerBoardWindow, captureFrame);
 
-					let lightingMetrics: LowLightFrameMetrics | null = null;
+					let lightingResult: ReturnType<typeof evaluateLatestLowLightFrame> = null;
 					if (!lightingCanvasRef.current) lightingCanvasRef.current = document.createElement("canvas");
 					const lightingCanvas = lightingCanvasRef.current;
 					const { width: lightW, height: lightH } = computeLightingCanvasSize(video.videoWidth, video.videoHeight);
@@ -443,16 +467,19 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 					if (lightCtx) {
 						lightCtx.drawImage(video, 0, 0, lightW, lightH);
 						const lightingImageData = lightCtx.getImageData(0, 0, lightW, lightH);
+						// Rescale into the lighting canvas's own coordinate space - see
+						// rescaleMarkersToLightingCanvas above.
+						const lightingMarkers = rescaleMarkersToLightingCanvas(markers, hiddenInputW, hiddenInputH, lightW, lightH);
 						const lightingFrame: CaptureQualityFrameSample = {
 							imageData: lightingImageData,
 							timestampMs: startTimeMs,
 							frameWidth: lightW,
 							frameHeight: lightH,
 							people: null,
-							markers: null,
+							markers: lightingMarkers,
 						};
 						pushLowLightFrame(session.lowLightWindow, lightingFrame);
-						lightingMetrics = evaluateLowLightFrame(lightingFrame, session.lowLightConfig);
+						lightingResult = evaluateLatestLowLightFrame(session.lowLightWindow.frames, session.lowLightConfig);
 					}
 
 					tickRef.current += 1;
@@ -466,7 +493,11 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 							)
 						);
 						captureQuality.setLowLightAggregate(
-							evaluateLowLightWindowAggregate(session.lowLightWindow.frames, session.lowLightConfig)
+							evaluateLowLightWindowAggregate(
+								session.lowLightWindow.frames,
+								session.lowLightConfig,
+								session.lowLightWindow.hysteresis
+							)
 						);
 					}
 
@@ -475,7 +506,7 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 						frameWidth: hiddenInputW,
 						frameHeight: hiddenInputH,
 						metrics: evaluateMarkerBoardFrame(captureFrame, session.markerBoardConfig),
-						lighting: lightingMetrics,
+						lighting: lightingResult,
 					});
 				}
 			}
