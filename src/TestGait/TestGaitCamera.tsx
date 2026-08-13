@@ -34,6 +34,8 @@ import {
 	RUN_CAPTURE_QUALITY_CHECKS_WHILE_RECORDING,
 	HUD_UPDATE_EVERY_N_FRAMES,
 	CAMERA_READY_STABILITY_DELAY_MS,
+	DETECTOR_INPUT_MAX_W,
+	DETECT_TICK_INTERVAL_MS,
 } from "./testGaitConfig";
 
 // Served from the CDN rather than bundled: the .apng is a CurveAssure product asset and
@@ -117,6 +119,7 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 	const lightingCanvasRef = useRef<HTMLCanvasElement | null>(null);
 	const fpsRef = useRef(0);
 	const lastTimeRef = useRef(0);
+	const lastTickAtRef = useRef(0);
 	const tickRef = useRef(0);
 
 	const [streamAttached, setStreamAttached] = useState(false);
@@ -415,6 +418,16 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 	// RealTimeProcessor/useModel.tsx — out of scope here (see task notes), not
 	// introduced by this file.
 	const detect = async () => {
+		// Same rAF-schedules / fixed-tick-runs split as RealTimeProcessor.tsx - see the
+		// comment there for why the detector cannot run every displayed frame at this input
+		// resolution.
+		const nowTick = performance.now();
+		if (nowTick - lastTickAtRef.current < DETECT_TICK_INTERVAL_MS) {
+			requestAnimationFrame(detect);
+			return;
+		}
+		lastTickAtRef.current = nowTick;
+
 		const video = webcamRef.current?.video;
 		if (modelCaller && video && video.readyState === 4 && video.videoWidth > 0 && video.videoHeight > 0 && hiddenRef.current) {
 			const arDetector = modelCaller as AR_Detector;
@@ -427,7 +440,7 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 			}
 			lastTimeRef.current = now;
 
-			const hiddenInputW = Math.min(640, video.videoWidth);
+			const hiddenInputW = Math.min(DETECTOR_INPUT_MAX_W, video.videoWidth);
 			const hiddenInputH = Math.round(hiddenInputW * (video.videoHeight / video.videoWidth));
 			hiddenRef.current.width = hiddenInputW;
 			hiddenRef.current.height = hiddenInputH;

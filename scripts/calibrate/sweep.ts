@@ -130,6 +130,9 @@ export function evaluateCombo(combo: SweepCombo, recordings: readonly ParsedCapt
 		layout: MARKER_BOARD,
 		thresholds: combo.thresholds,
 		liveWindowRecencyWeight: combo.alpha,
+		// The swept alpha is a per-tick weight at the reference rate; the sweep explores
+		// that weight, not the reference it is expressed against.
+		ewmaReferenceTickHz: DEFAULTS.sampling.ewmaReferenceTickHz,
 	};
 
 	const perFile: ComboFileResult[] = recordings.map((recording) => {

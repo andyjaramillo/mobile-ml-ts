@@ -55,6 +55,8 @@ export interface LowLightCheckConfig {
 	thresholds: LightingThresholds;
 	/** Same field as CaptureQualityConfig.sampling.liveWindowRecencyWeight - see markerBoardCheck.ts's MarkerBoardCheckConfig for the identical convention. */
 	liveWindowRecencyWeight: number;
+	/** Same field as CaptureQualityConfig.sampling.ewmaReferenceTickHz - the rate at which liveWindowRecencyWeight is the effective alpha. */
+	ewmaReferenceTickHz: number;
 }
 
 export function defaultLowLightCheckConfig(config: CaptureQualityConfig = DEFAULTS): LowLightCheckConfig {
@@ -63,7 +65,16 @@ export function defaultLowLightCheckConfig(config: CaptureQualityConfig = DEFAUL
 		roi: LIGHTING_ROI,
 		thresholds: config.lighting,
 		liveWindowRecencyWeight: config.sampling.liveWindowRecencyWeight,
+		ewmaReferenceTickHz: config.sampling.ewmaReferenceTickHz,
 	};
+}
+
+/** Rescales the per-tick EWMA weight to an arbitrary inter-frame gap. Duplicated from markerBoardCheck.ts rather than imported - each check module stays independently portable by plain copy; see that copy for the derivation. */
+function resolveEwmaAlpha(deltaMs: number, referenceTickHz: number, referenceAlpha: number): number {
+	if (!(referenceTickHz > 0) || !Number.isFinite(deltaMs) || deltaMs <= 0) return referenceAlpha;
+	if (referenceAlpha <= 0) return 0;
+	if (referenceAlpha >= 1) return 1;
+	return 1 - (1 - referenceAlpha) ** (deltaMs / (1000 / referenceTickHz));
 }
 
 /** Which of the three ROI selection paths (see module header) produced a given reading. */
@@ -134,6 +145,8 @@ export function resolveLowLightRoi(frames: readonly CaptureQualityFrameSample[],
 }
 
 export interface LowLightFrameMetrics {
+	/** Same clock as CaptureQualityFrameSample.timestampMs, carried through so aggregateLowLightMetrics can rescale the EWMA to real elapsed time rather than assuming a fixed tick rate - mirrors MarkerBoardFrameMetrics.timestampMs. */
+	timestampMs: number;
 	cellCount: number;
 	/** Cells with at least one sampled pixel; can be less than cellCount for a degenerate (near-zero) frame size. */
 	computableCellCount: number;
@@ -157,6 +170,7 @@ export interface LowLightFrameMetrics {
 }
 
 const EMPTY_METRICS: LowLightFrameMetrics = {
+	timestampMs: 0,
 	cellCount: 0,
 	computableCellCount: 0,
 	meanLuma: null,
@@ -187,7 +201,7 @@ export function evaluateLowLightFrame(
 	const { cols, rows, cellSampleStride, minPixelsPerCell } = config.grid;
 	const cellCount = cols * rows;
 	if (!image || image.width <= 0 || image.height <= 0 || cols <= 0 || rows <= 0) {
-		return { ...EMPTY_METRICS, cellCount };
+		return { ...EMPTY_METRICS, timestampMs: frame.timestampMs, cellCount };
 	}
 
 	// The ROI may have been resolved from a different frame (last-known/default paths), so
@@ -197,7 +211,7 @@ export function evaluateLowLightFrame(
 	const roiW = Math.max(0, Math.min(clamp01(roi.widthNorm) * image.width, image.width - roiX));
 	const roiH = Math.max(0, Math.min(clamp01(roi.heightNorm) * image.height, image.height - roiY));
 	if (roiW <= 0 || roiH <= 0) {
-		return { ...EMPTY_METRICS, cellCount };
+		return { ...EMPTY_METRICS, timestampMs: frame.timestampMs, cellCount };
 	}
 
 	const cellW = roiW / cols;
@@ -254,10 +268,11 @@ export function evaluateLowLightFrame(
 	}
 
 	if (computableCellCount === 0) {
-		return { ...EMPTY_METRICS, cellCount };
+		return { ...EMPTY_METRICS, timestampMs: frame.timestampMs, cellCount };
 	}
 
 	return {
+		timestampMs: frame.timestampMs,
 		cellCount,
 		computableCellCount,
 		meanLuma: lumaSum / computableCellCount,
@@ -365,24 +380,42 @@ export function aggregateLowLightMetrics(
 		return EMPTY_AGGREGATE;
 	}
 
-	const alpha = config.liveWindowRecencyWeight;
 	let meanLuma: number | null = null;
 	let darkCellFraction: number | null = null;
 	let meanContrastStd: number | null = null;
 	let flatCellFraction: number | null = null;
 	let latest: LowLightFrameMetrics | null = null;
 
-	function blend(prev: number | null, next: number | null): number | null {
+	// Per-signal last-advance timestamps, same reasoning as aggregateMarkerBoardMetrics: a
+	// frame whose metric is null leaves that signal untouched, so its decay must span the
+	// time it actually sat unchanged, not the gap to the previous frame in the window.
+	let meanLumaAtMs: number | null = null;
+	let darkAtMs: number | null = null;
+	let contrastAtMs: number | null = null;
+	let flatAtMs: number | null = null;
+
+	function blend(prev: number | null, next: number | null, sinceMs: number | null, nowMs: number): number | null {
 		if (next === null) return prev;
-		return prev === null ? next : alpha * next + (1 - alpha) * prev;
+		if (prev === null) return next;
+		const alpha = resolveEwmaAlpha(
+			sinceMs === null ? NaN : nowMs - sinceMs,
+			config.ewmaReferenceTickHz,
+			config.liveWindowRecencyWeight
+		);
+		return alpha * next + (1 - alpha) * prev;
 	}
 
 	for (const metrics of metricsSequence) {
 		latest = metrics;
-		meanLuma = blend(meanLuma, metrics.meanLuma);
-		darkCellFraction = blend(darkCellFraction, metrics.darkCellFraction);
-		meanContrastStd = blend(meanContrastStd, metrics.meanContrastStd);
-		flatCellFraction = blend(flatCellFraction, metrics.flatCellFraction);
+		const nowMs = metrics.timestampMs;
+		meanLuma = blend(meanLuma, metrics.meanLuma, meanLumaAtMs, nowMs);
+		if (metrics.meanLuma !== null) meanLumaAtMs = nowMs;
+		darkCellFraction = blend(darkCellFraction, metrics.darkCellFraction, darkAtMs, nowMs);
+		if (metrics.darkCellFraction !== null) darkAtMs = nowMs;
+		meanContrastStd = blend(meanContrastStd, metrics.meanContrastStd, contrastAtMs, nowMs);
+		if (metrics.meanContrastStd !== null) contrastAtMs = nowMs;
+		flatCellFraction = blend(flatCellFraction, metrics.flatCellFraction, flatAtMs, nowMs);
+		if (metrics.flatCellFraction !== null) flatAtMs = nowMs;
 	}
 
 	const activeCodes: CaptureQualityIssueCode[] = [];

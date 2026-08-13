@@ -33,7 +33,13 @@ import GuidanceBanner from "./CaptureQualityHud/GuidanceBanner";
 import { createCaptureRecorderState, recordCaptureFrame } from "./CaptureQualityHud/captureRecorder";
 
 const EXPECTED_MARKER_IDS = new Set(MARKER_BOARD.expectedMarkerIds);
-const HUD_UPDATE_EVERY_N_FRAMES = 3; // throttle React state updates off the ~25-30fps detect loop
+const HUD_UPDATE_EVERY_N_FRAMES = 3; // throttle React state updates off the detect loop
+
+// Matches Website's ArucoDetection.tsx. At the harness's previous 640 the markers sat near
+// the decode floor at the intended framing, so every full-set rate measured here
+// understated the real app and some thresholds were fitted against that artifact.
+const DETECTOR_INPUT_MAX_W = 1024;
+const DETECT_TICK_INTERVAL_MS = 1000 / CAPTURE_QUALITY_DEFAULTS.sampling.liveTickHz;
 
 // The ArUco path (below) reads its ImageData through `offCtx.filter =
 // "contrast(2) brightness(1.1)"` before drawImage/getImageData - deliberately boosted to
@@ -81,6 +87,7 @@ const RealTimeProcessor = () => {
   const canvasRef = useRef(null);
   
   const lastTimeRef = useRef(0);
+  const lastTickAtRef = useRef(0);
   const fpsRef = useRef(0);
   
   const [facingMode, setFacingMode] = useState("user"); // "user" or "environment"
@@ -239,6 +246,17 @@ const RealTimeProcessor = () => {
   }, [webcamRef.current]);
 
   const detect = async () => {
+    // rAF stays the scheduler (it pauses with the tab and never outruns the display), but
+    // the body runs at DETECT_TICK_INTERVAL_MS. At DETECTOR_INPUT_MAX_W the ArUco pass is
+    // far too expensive to run every displayed frame, and a fixed tick also keeps the
+    // budget predictable once a second model has to share it.
+    const nowTick = performance.now();
+    if (nowTick - lastTickAtRef.current < DETECT_TICK_INTERVAL_MS) {
+      requestAnimationFrame(detect);
+      return;
+    }
+    lastTickAtRef.current = nowTick;
+
     if (
       modelCaller &&
       webcamRef.current &&
@@ -280,7 +298,7 @@ const RealTimeProcessor = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       } else if (modelType === "aruco") {
         const arDetector = modelCaller as AR_Detector;
-        const hiddeninputW = Math.min(640, video.videoWidth);
+        const hiddeninputW = Math.min(DETECTOR_INPUT_MAX_W, video.videoWidth);
         const hiddeninputH = Math.round(hiddeninputW * (video.videoHeight / video.videoWidth));
 
         hiddenRef.current.width = hiddeninputW;

@@ -38,8 +38,10 @@ import type { CaptureQualityConfig, MarkerBoardLayout, MarkerBoardThresholds } f
 export interface MarkerBoardCheckConfig {
 	layout: MarkerBoardLayout;
 	thresholds: MarkerBoardThresholds;
-	/** Same field as CaptureQualityConfig.sampling.liveWindowRecencyWeight — the EWMA weight given to the newest frame each update. */
+	/** Same field as CaptureQualityConfig.sampling.liveWindowRecencyWeight — the EWMA weight given to the newest frame, at ewmaReferenceTickHz. */
 	liveWindowRecencyWeight: number;
+	/** Same field as CaptureQualityConfig.sampling.ewmaReferenceTickHz - the rate at which liveWindowRecencyWeight is the effective alpha. */
+	ewmaReferenceTickHz: number;
 }
 
 /** Convenience: build a MarkerBoardCheckConfig from a resolved CaptureQualityConfig (defaults to the top-level DEFAULTS/MARKER_BOARD). */
@@ -48,7 +50,24 @@ export function defaultMarkerBoardCheckConfig(config: CaptureQualityConfig = DEF
 		layout: MARKER_BOARD,
 		thresholds: config.markerBoard,
 		liveWindowRecencyWeight: config.sampling.liveWindowRecencyWeight,
+		ewmaReferenceTickHz: config.sampling.ewmaReferenceTickHz,
 	};
+}
+
+/**
+ * Rescales the per-tick EWMA weight to an arbitrary inter-frame gap, so smoothing spans a
+ * fixed wall-clock time rather than a fixed number of ticks. `1 - (1 - a)^(dt / dtRef)` is
+ * the exact resampling of a geometric decay - N steps of dtRef/N compose to one step of
+ * dtRef - so the result is independent of how finely the interval is subdivided. A
+ * non-positive or non-finite gap (first frame, repeated timestamp, clock jump) falls back
+ * to alphaRef rather than returning 0 or NaN and freezing the average.
+ */
+export function resolveEwmaAlpha(deltaMs: number, referenceTickHz: number, referenceAlpha: number): number {
+	if (!(referenceTickHz > 0) || !Number.isFinite(deltaMs) || deltaMs <= 0) return referenceAlpha;
+	if (referenceAlpha <= 0) return 0;
+	if (referenceAlpha >= 1) return 1;
+	const referenceDeltaMs = 1000 / referenceTickHz;
+	return 1 - (1 - referenceAlpha) ** (deltaMs / referenceDeltaMs);
 }
 
 export interface MarkerBoardFrameMetrics {
@@ -488,7 +507,6 @@ export function aggregateMarkerBoardMetrics(
 		};
 	}
 
-	const alpha = config.liveWindowRecencyWeight;
 	let fullSetScore: number | null = null;
 	let normalizedArea: number | null = null;
 	let diagonalRatio: number | null = null;
@@ -496,33 +514,64 @@ export function aggregateMarkerBoardMetrics(
 	let detectedMarkerAreaNorm: number | null = null;
 	let latest: MarkerBoardFrameMetrics | null = null;
 
+	// Each signal decays over the time since IT last advanced, not since the last frame in
+	// the window - the geometry EWMAs below skip partial-board frames entirely, so a shared
+	// frame-to-frame gap would under-weight a full-set frame that arrives after a long run
+	// of partial ones. Tracked per signal so the decay always spans the interval the value
+	// actually sat unchanged. Null until that signal has seeded.
+	let fullSetAtMs: number | null = null;
+	let normalizedAreaAtMs: number | null = null;
+	let diagonalRatioAtMs: number | null = null;
+	let orientationAtMs: number | null = null;
+	let detectedAreaAtMs: number | null = null;
+
+	// One-entry memo on the gap: a steady loop (and every offline replay, whose gap is a
+	// constant reconstructed from the recording's mean fps) repeats the same delta on
+	// almost every step, and the exponentiation is otherwise the most expensive thing in
+	// this loop - it more than doubled the calibration sweep's runtime without this.
+	let memoDelta = NaN;
+	let memoAlpha = config.liveWindowRecencyWeight;
+	const alphaSince = (sinceMs: number | null, nowMs: number): number => {
+		const delta = sinceMs === null ? NaN : nowMs - sinceMs;
+		if (delta !== memoDelta) {
+			memoDelta = delta;
+			memoAlpha = resolveEwmaAlpha(delta, config.ewmaReferenceTickHz, config.liveWindowRecencyWeight);
+		}
+		return memoAlpha;
+	};
+
 	for (const metrics of metricsSequence) {
 		latest = metrics;
+		const nowMs = metrics.timestampMs;
 
 		const fullSetSample = metrics.isFullSet ? 1 : 0;
-		fullSetScore = fullSetScore === null ? fullSetSample : alpha * fullSetSample + (1 - alpha) * fullSetScore;
+		const fullSetAlpha = alphaSince(fullSetAtMs, nowMs);
+		fullSetScore = fullSetScore === null ? fullSetSample : fullSetAlpha * fullSetSample + (1 - fullSetAlpha) * fullSetScore;
+		fullSetAtMs = nowMs;
 
 		if (metrics.detectedMarkerAreaNorm !== null) {
+			const a = alphaSince(detectedAreaAtMs, nowMs);
 			detectedMarkerAreaNorm =
-				detectedMarkerAreaNorm === null
-					? metrics.detectedMarkerAreaNorm
-					: alpha * metrics.detectedMarkerAreaNorm + (1 - alpha) * detectedMarkerAreaNorm;
+				detectedMarkerAreaNorm === null ? metrics.detectedMarkerAreaNorm : a * metrics.detectedMarkerAreaNorm + (1 - a) * detectedMarkerAreaNorm;
+			detectedAreaAtMs = nowMs;
 		}
 
 		if (metrics.isFullSet) {
 			if (metrics.normalizedArea !== null) {
-				normalizedArea =
-					normalizedArea === null ? metrics.normalizedArea : alpha * metrics.normalizedArea + (1 - alpha) * normalizedArea;
+				const a = alphaSince(normalizedAreaAtMs, nowMs);
+				normalizedArea = normalizedArea === null ? metrics.normalizedArea : a * metrics.normalizedArea + (1 - a) * normalizedArea;
+				normalizedAreaAtMs = nowMs;
 			}
 			if (metrics.diagonalRatio !== null) {
-				diagonalRatio =
-					diagonalRatio === null ? metrics.diagonalRatio : alpha * metrics.diagonalRatio + (1 - alpha) * diagonalRatio;
+				const a = alphaSince(diagonalRatioAtMs, nowMs);
+				diagonalRatio = diagonalRatio === null ? metrics.diagonalRatio : a * metrics.diagonalRatio + (1 - a) * diagonalRatio;
+				diagonalRatioAtMs = nowMs;
 			}
 			if (metrics.orientationAngleRad !== null) {
+				const a = alphaSince(orientationAtMs, nowMs);
 				orientationAngleRad =
-					orientationAngleRad === null
-						? metrics.orientationAngleRad
-						: alpha * metrics.orientationAngleRad + (1 - alpha) * orientationAngleRad;
+					orientationAngleRad === null ? metrics.orientationAngleRad : a * metrics.orientationAngleRad + (1 - a) * orientationAngleRad;
+				orientationAtMs = nowMs;
 			}
 		}
 	}

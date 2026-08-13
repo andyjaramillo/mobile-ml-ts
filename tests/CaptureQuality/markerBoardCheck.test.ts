@@ -18,6 +18,7 @@ import {
 	resetMarkerBoardFrameWindow,
 	resetMarkerBoardHysteresisState,
 	resetMarkerPersistenceTracker,
+	resolveEwmaAlpha,
 	updateMarkerPersistenceTracker,
 } from "../../src/CaptureQuality/markerBoardCheck";
 import type { MarkerBoardFrameMetrics } from "../../src/CaptureQuality/markerBoardCheck";
@@ -705,19 +706,24 @@ describe("end-to-end classification of the eleven real calibration recordings", 
 	// rate - the DESIGNED operating point at that framing, not a defect - see
 	// captureQualityConfig.ts). MEASURED under the final config (alpha=0.15, hysteresis
 	// gaps applied): dominant OK (160/189 = 84.7%), MARKER_INCOMPLETE the rest (29/189 =
-	// 15.3%), 13 state-transition flaps - down from 42 under the retired alpha=0.08/
-	// no-hysteresis config (a 69% reduction). Persistence never fires (marker 2's longest
-	// run is 3 frames, ~79ms at this recording's 38fps - nowhere near the 500ms
-	// threshold). See sampling.liveWindowRecencyWeight's doc in captureQualityConfig.ts
-	// for the full alpha-sweep numbers this flap-count improvement is based on.
+	// 14.8%), 16 state-transition flaps - down from 42 under the retired alpha=0.08/
+	// no-hysteresis config. Persistence never fires (marker 2's longest run is 3 frames,
+	// ~79ms at this recording's 38fps - nowhere near the 500ms threshold). See
+	// sampling.liveWindowRecencyWeight's doc in captureQualityConfig.ts for the alpha sweep
+	// behind that improvement.
+	//
+	// Re-pinned when the EWMA became time-based (sampling.ewmaReferenceTickHz): this
+	// recording ran at 38fps, faster than the 30Hz reference, so each frame now carries
+	// slightly LESS weight than the flat 0.15 it used to get - marginally more smoothing,
+	// moving one frame from MARKER_INCOMPLETE to OK. Dominant state is unchanged.
 	it("ideal-overlay-match classifies dominant OK with minimal flapping and no persistence firing", () => {
 		const counts = stateCounts("2026-08-13-gait-ideal-overlay-match.cq2.txt");
 		expect(dominantStateKey("2026-08-13-gait-ideal-overlay-match.cq2.txt")).toBe("OK");
-		expect(counts.get("OK")).toBe(160);
-		expect(counts.get("MARKER_INCOMPLETE")).toBe(29);
+		expect(counts.get("OK")).toBe(161);
+		expect(counts.get("MARKER_INCOMPLETE")).toBe(28);
 		expect(counts.has("MARKER_TOO_CLOSE")).toBe(false);
 		expect(counts.has("MARKER_OBSTRUCTED")).toBe(false);
-		expect(flapCount("2026-08-13-gait-ideal-overlay-match.cq2.txt")).toBe(13);
+		expect(flapCount("2026-08-13-gait-ideal-overlay-match.cq2.txt")).toBe(16);
 	});
 
 	// The human's own reported real-world setup - the SECOND primary reference (task:
@@ -727,13 +733,14 @@ describe("end-to-end classification of the eleven real calibration recordings", 
 	// false positive that boundary's 2026-08-13 removal fixed. The reintroduced boundary
 	// (0.0038, human-stated framing limit rather than a detection number - see
 	// captureQualityConfig.ts) sits well above this recording's own range (0.00262-
-	// 0.00308), so it stays clean here too. MEASURED: dominant OK (267/280 = 95.4%), only
-	// 1 state-transition flap.
+	// 0.00308), so it stays clean here too. MEASURED: dominant OK (266/280 = 95.0%), only
+	// 1 state-transition flap. Re-pinned by one frame when the EWMA became time-based -
+	// same 37fps-vs-30Hz-reference effect described on ideal-overlay-match above.
 	it("good-place-drift (the human's reported real-world setup) classifies dominant OK with minimal flapping", () => {
 		const counts = stateCounts("2026-08-13-gait-good-place-drift.cq2.txt");
 		expect(dominantStateKey("2026-08-13-gait-good-place-drift.cq2.txt")).toBe("OK");
-		expect(counts.get("OK")).toBe(267);
-		expect(counts.get("MARKER_INCOMPLETE")).toBe(13);
+		expect(counts.get("OK")).toBe(266);
+		expect(counts.get("MARKER_INCOMPLETE")).toBe(14);
 		expect(counts.has("MARKER_TOO_CLOSE")).toBe(false);
 		expect(counts.has("MARKER_OBSTRUCTED")).toBe(false);
 		expect(flapCount("2026-08-13-gait-good-place-drift.cq2.txt")).toBe(1);
@@ -870,10 +877,19 @@ describe("per-marker persistence signal against the real recordings", () => {
 // derivation), so a size warning anywhere in this replay would mean the boundaries
 // contradict the human's own stated judgement - the strongest single assertion in this
 // suite, since it pins both boundaries at once against real demonstrated limits, not a
-// synthetic fixture. MEASURED under the current thresholds: 179/277 OK, 98/277
+// synthetic fixture. MEASURED under the current thresholds: 184/277 OK, 93/277
 // MARKER_INCOMPLETE (full-set rate dips well below minimumFullSetWeight during the sweep,
-// as expected - that gate is unaffected by this revision), 18 state-transition flaps -
+// as expected - that gate is unaffected by this revision), 26 state-transition flaps -
 // zero steps of either size code.
+//
+// This recording moved the most when the EWMA became time-based, and it is the only pinned
+// one that was DECIMATED (stride=2 - the recorder halved its sampling when the buffer
+// capped). Its stored samples are ~53ms apart rather than ~26ms, so each now carries
+// alpha 0.226 instead of a flat 0.150 - about 1.5x the weight, so less smoothing, hence
+// 5 more OK frames and 8 more flaps.
+// That is the intended correction - the old flat weight silently treated a decimated
+// series as if it were full-rate - but it does mean the flap count here is no longer
+// directly comparable with the stride=1 recordings above.
 describe("viable-range-sweep - pinned regression against the human's demonstrated viable range", () => {
 	const CALIBRATION_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../calibration");
 	const windowSize = DEFAULTS.sampling.liveWindowFrameCount;
@@ -903,9 +919,55 @@ describe("viable-range-sweep - pinned regression against the human's demonstrate
 			if (prevKey !== null && key !== prevKey) flaps++;
 			prevKey = key;
 		}
-		expect(counts.get("OK")).toBe(179);
-		expect(counts.get("MARKER_INCOMPLETE")).toBe(98);
+		expect(counts.get("OK")).toBe(184);
+		expect(counts.get("MARKER_INCOMPLETE")).toBe(93);
 		expect(counts.size).toBe(2);
-		expect(flaps).toBe(18);
+		expect(flaps).toBe(26);
+	});
+});
+
+describe("resolveEwmaAlpha - rate-invariant smoothing", () => {
+	const REF_HZ = DEFAULTS.sampling.ewmaReferenceTickHz;
+	const REF_ALPHA = DEFAULTS.sampling.liveWindowRecencyWeight;
+	const REF_DT = 1000 / REF_HZ;
+
+	it("returns the configured weight unchanged at exactly the reference interval", () => {
+		expect(resolveEwmaAlpha(REF_DT, REF_HZ, REF_ALPHA)).toBeCloseTo(REF_ALPHA, 12);
+	});
+
+	it("composes exactly: N sub-steps decay the same as one reference step", () => {
+		// The property that makes the smoothing independent of tick rate - subdividing an
+		// interval must not change how much the old value has decayed by the end of it.
+		for (const n of [2, 4, 8, 37]) {
+			const sub = resolveEwmaAlpha(REF_DT / n, REF_HZ, REF_ALPHA);
+			expect((1 - sub) ** n).toBeCloseTo(1 - REF_ALPHA, 12);
+		}
+	});
+
+	it("weights a longer gap more heavily, so a throttled loop is not slower to react in wall-clock terms", () => {
+		const fast = resolveEwmaAlpha(REF_DT / 4, REF_HZ, REF_ALPHA);
+		const slow = resolveEwmaAlpha(REF_DT * 4, REF_HZ, REF_ALPHA);
+		expect(fast).toBeLessThan(REF_ALPHA);
+		expect(slow).toBeGreaterThan(REF_ALPHA);
+		expect(slow).toBeLessThan(1);
+	});
+
+	it("reaches the same smoothed value from either rate after equal wall-clock time", () => {
+		// Drive a step input for 1s at the reference rate and at the 8Hz live tick; both
+		// must land at the same place, which is the whole point of the conversion.
+		function settle(tickHz: number): number {
+			const dt = 1000 / tickHz;
+			const alpha = resolveEwmaAlpha(dt, REF_HZ, REF_ALPHA);
+			let value = 0;
+			for (let elapsed = 0; elapsed < 1000; elapsed += dt) value = alpha * 1 + (1 - alpha) * value;
+			return value;
+		}
+		expect(settle(DEFAULTS.sampling.liveTickHz)).toBeCloseTo(settle(REF_HZ), 6);
+	});
+
+	it("falls back to the reference weight on a first frame, duplicate timestamp, or backwards clock", () => {
+		for (const bad of [NaN, 0, -5, Infinity]) {
+			expect(resolveEwmaAlpha(bad, REF_HZ, REF_ALPHA)).toBe(REF_ALPHA);
+		}
 	});
 });

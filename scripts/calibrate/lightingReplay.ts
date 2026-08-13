@@ -51,10 +51,12 @@ export function estimateFractionBelow(dist: ParsedLightingDistribution, x: numbe
 export function lightingSampleToMetrics(
 	sample: ParsedLightingSample,
 	grid: { cols: number; rows: number },
-	thresholds: LightingThresholds
+	thresholds: LightingThresholds,
+	timestampMs: number
 ): LowLightFrameMetrics {
 	const cellCount = grid.cols * grid.rows;
 	return {
+		timestampMs,
 		cellCount,
 		computableCellCount: cellCount,
 		meanLuma: sample.luma.mean,
@@ -78,7 +80,14 @@ export function replayLighting(
 	windowSize: number
 ): LightingReplayStep[] {
 	const grid = recording.lightingGrid ?? { cols: LIGHTING_GRID.cols, rows: LIGHTING_GRID.rows };
-	const metrics = recording.lightingSamples.map((s) => lightingSampleToMetrics(s, grid, config.thresholds));
+	// Lighting samples are decimated relative to marker samples, and the decimation factor
+	// is not stored (it also halves once the lighting buffer caps), so the interval is
+	// recovered from the two totals: the recording spans n marker samples, over which ln
+	// lighting samples were taken. Needed because the EWMA is now time-based.
+	const markerStepMs = recording.fpsMean > 0 ? (1000 * recording.stride) / recording.fpsMean : 0;
+	const lightingStepMs =
+		recording.lightingSamples.length > 0 ? (markerStepMs * recording.samples.length) / recording.lightingSamples.length : 0;
+	const metrics = recording.lightingSamples.map((s, i) => lightingSampleToMetrics(s, grid, config.thresholds, i * lightingStepMs));
 	const steps: LightingReplayStep[] = new Array(metrics.length);
 	for (let i = 0; i < metrics.length; i++) {
 		const start = Math.max(0, i - windowSize + 1);
