@@ -9,6 +9,8 @@ interface Props {
 	config: MarkerBoardCheckConfig;
 	/** Distance from the safe-area bottom inset, in px. Defaults to 0 (RealTimeProcessor.tsx has nothing else at the bottom); callers whose own bottom chrome would collide (e.g. TestGait's record button cluster) can push this panel up. */
 	bottomOffsetPx?: number;
+	/** Render as a section of DebugHudStack instead of a self-positioned floating box. */
+	embedded?: boolean;
 }
 
 // Values in this check run ~0.004-0.008 at close range; toFixed(4) on that reads as
@@ -40,7 +42,7 @@ const CODE_LABEL: Record<CaptureQualityIssueCode, string> = {
 	VIDEO_TOO_LONG: "VIDEO_TOO_LONG",
 };
 
-function MarkerBoardHud({ aggregate, config, bottomOffsetPx = 0 }: Props) {
+function MarkerBoardHud({ aggregate, config, bottomOffsetPx = 0, embedded = false }: Props) {
 	const latest = aggregate?.latest ?? null;
 	const codes = aggregate?.activeCodes ?? [];
 	const ok = aggregate !== null && codes.length === 0 && (latest?.visibleCount ?? 0) > 0;
@@ -49,10 +51,10 @@ function MarkerBoardHud({ aggregate, config, bottomOffsetPx = 0 }: Props) {
 
 	return (
 		<div
-			className="mbh-root"
+			className={`mbh-root${embedded ? " mbh-embedded" : ""}`}
 			role="status"
 			aria-live="polite"
-			style={bottomOffsetPx ? { bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffsetPx}px)` } : undefined}
+			style={!embedded && bottomOffsetPx ? { bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffsetPx}px)` } : undefined}
 		>
 			<style>{CSS}</style>
 			<div className="mbh-row mbh-header">
@@ -99,6 +101,25 @@ function MarkerBoardHud({ aggregate, config, bottomOffsetPx = 0 }: Props) {
 }
 
 const CSS = `
+	/* Rendered as a section of DebugHudStack rather than as its own floating box:
+	   drop the fixed positioning, the background and the width cap, and let the
+	   container own all three. */
+	.mbh-root.mbh-embedded {
+		position: static;
+		inset: auto;
+		transform: none;
+		margin: 0;
+		padding: 0;
+		border-radius: 0;
+		background: transparent;
+		max-width: none;
+		width: auto;
+		font-size: inherit;
+		line-height: inherit;
+	}
+	/* The container is the scroll box; a section must never clip its own values -
+	   that is what hid the lighting and residual figures on the first on-device read. */
+	.mbh-root.mbh-embedded .mbh-row { white-space: normal; overflow: visible; text-overflow: clip; }
 	.mbh-root {
 		position: fixed;
 		left: env(safe-area-inset-left, 0px);

@@ -4,6 +4,7 @@ import { CAPTURE_QUALITY_GUIDANCE_MESSAGES, pickGuidanceMessage } from "../../sr
 import type { CaptureQualityIssueCode } from "../../src/CaptureQuality/types";
 import type { MarkerBoardWindowAggregate } from "../../src/CaptureQuality/markerBoardCheck";
 import type { LowLightWindowAggregate } from "../../src/CaptureQuality/lowLightCheck";
+import type { SubjectPositionWindowAggregate } from "../../src/CaptureQuality/subjectPositionCheck";
 
 function markerAggregate(activeCodes: CaptureQualityIssueCode[], weightedNormalizedArea: number | null = null): MarkerBoardWindowAggregate {
 	return {
@@ -122,5 +123,99 @@ describe("pickGuidanceMessage", () => {
 		const selection = pickGuidanceMessage(markerAggregate(["MARKER_WRONG_ORIENTATION"]), lightAggregate(["LOW_LIGHT", "LOW_CONTRAST"]));
 		expect(typeof selection.message).toBe("string");
 		expect(selection.code).toBe("MARKER_WRONG_ORIENTATION");
+	});
+});
+
+function subjectAggregate(activeCodes: CaptureQualityIssueCode[]): SubjectPositionWindowAggregate {
+	return {
+		frameCount: 10,
+		detectionFrameCount: 10,
+		weightedDetectionScore: 1,
+		weightedMultiPersonScore: 0,
+		weightedSubjectAreaNorm: 0.16,
+		weightedSpeedBoardLengthsPerSec: null,
+		subjectAreaCv: null,
+		weightedStartLineDistanceBoardLengths: null,
+		latest: null,
+		activeCodes,
+	};
+}
+
+describe("subject codes in the guidance banner", () => {
+	it("surfaces MULTIPLE_PEOPLE", () => {
+		const selection = pickGuidanceMessage(markerAggregate([]), null, DEFAULTS.markerBoard, subjectAggregate(["MULTIPLE_PEOPLE"]));
+		expect(selection.code).toBe("MULTIPLE_PEOPLE");
+		expect(selection.message).toBe(CAPTURE_QUALITY_GUIDANCE_MESSAGES.MULTIPLE_PEOPLE);
+	});
+
+	it("surfaces SUBJECT_NOT_AT_START_LINE", () => {
+		const selection = pickGuidanceMessage(markerAggregate([]), null, DEFAULTS.markerBoard, subjectAggregate(["SUBJECT_NOT_AT_START_LINE"]));
+		expect(selection.code).toBe("SUBJECT_NOT_AT_START_LINE");
+	});
+
+	it("keeps an unresolvable board ahead of any subject advice", () => {
+		// Telling someone where to stand is useless while the camera cannot resolve the board.
+		const selection = pickGuidanceMessage(
+			markerAggregate(["MARKER_INCOMPLETE"]),
+			null,
+			DEFAULTS.markerBoard,
+			subjectAggregate(["SUBJECT_NOT_AT_START_LINE"])
+		);
+		expect(selection.code).toBe("MARKER_INCOMPLETE");
+	});
+
+	it("gives the green light when board, lighting and subject are all clean", () => {
+		const selection = pickGuidanceMessage(markerAggregate([], 0.0025), null, DEFAULTS.markerBoard, subjectAggregate([]));
+		expect(selection.code).toBe("IDEAL");
+	});
+
+	it("behaves exactly as before when the subject aggregate is absent - fail open", () => {
+		// The person model failing to load must not change the banner at all.
+		const withNull = pickGuidanceMessage(markerAggregate([], 0.0025), null, DEFAULTS.markerBoard, null);
+		const omitted = pickGuidanceMessage(markerAggregate([], 0.0025), null, DEFAULTS.markerBoard);
+		expect(withNull).toEqual(omitted);
+		expect(withNull.code).toBe("IDEAL");
+	});
+});
+
+describe("a momentary board blip must not mask a sustained subject problem", () => {
+	// The bug this pins: ranking ANY blocking marker code above the subject meant a single
+	// bad frame out of 47 won the banner, and SUBJECT_NOT_AT_START_LINE was never seen on a
+	// phone even though the check was firing correctly the whole time.
+	function boardVisibleButBlipping(code: CaptureQualityIssueCode): MarkerBoardWindowAggregate {
+		const aggregate = markerAggregate([code], 0.0025);
+		// Smoothed visibility says the board IS resolvable - the code is a transient.
+		return { ...aggregate, weightedFullSetScore: 0.95 };
+	}
+
+	it("shows the subject message when the board's smoothed score says it is resolvable", () => {
+		const selection = pickGuidanceMessage(
+			boardVisibleButBlipping("MARKER_OBSTRUCTED"),
+			null,
+			DEFAULTS.markerBoard,
+			subjectAggregate(["SUBJECT_NOT_AT_START_LINE"])
+		);
+		expect(selection.code).toBe("SUBJECT_NOT_AT_START_LINE");
+	});
+
+	it("still shows the board message when the board is genuinely unresolvable", () => {
+		const unresolvable = { ...markerAggregate(["MARKER_INCOMPLETE"], null), weightedFullSetScore: 0.1 };
+		const selection = pickGuidanceMessage(
+			unresolvable,
+			null,
+			DEFAULTS.markerBoard,
+			subjectAggregate(["SUBJECT_NOT_AT_START_LINE"])
+		);
+		expect(selection.code).toBe("MARKER_INCOMPLETE");
+	});
+
+	it("still shows a transient board code when there is no subject issue to outrank it", () => {
+		const selection = pickGuidanceMessage(
+			boardVisibleButBlipping("MARKER_OBSTRUCTED"),
+			null,
+			DEFAULTS.markerBoard,
+			subjectAggregate([])
+		);
+		expect(selection.code).toBe("MARKER_OBSTRUCTED");
 	});
 });

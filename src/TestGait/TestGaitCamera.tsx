@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
 import { AR_Detector } from "../aruco";
 import useModel from "../model/useModel";
+import type { PersonDetector } from "../model/usePersonDetector";
 import { MARKER_BOARD } from "../CaptureQuality/captureQualityConfig";
 import {
 	pushMarkerBoardFrame,
@@ -22,7 +23,13 @@ import {
 	evaluateLatestLowLightFrame,
 	evaluateLowLightWindowAggregate,
 } from "../CaptureQuality/lowLightCheck";
-import type { CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "../CaptureQuality/types";
+import {
+	pushSubjectPositionFrame,
+	evaluateSubjectPositionFrame,
+	evaluateSubjectPositionWindowAggregate,
+} from "../CaptureQuality/subjectPositionCheck";
+import type { CaptureQualityBBox, CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "../CaptureQuality/types";
+import { completeTick, recordStage, timeStage } from "../CaptureQualityHud/tickProfiler";
 import { recordCaptureFrame } from "../CaptureQualityHud/captureRecorder";
 import type { CaptureRecorderState } from "../CaptureQualityHud/captureRecorder";
 import type { CaptureQualitySession } from "./useCaptureQualitySession";
@@ -36,6 +43,7 @@ import {
 	CAMERA_READY_STABILITY_DELAY_MS,
 	DETECTOR_INPUT_MAX_W,
 	DETECT_TICK_INTERVAL_MS,
+	PERSON_DETECT_EVERY_N_TICKS,
 } from "./testGaitConfig";
 
 // Served from the CDN rather than bundled: the .apng is a CurveAssure product asset and
@@ -83,6 +91,29 @@ function rescaleMarkersToLightingCanvas(
 	}));
 }
 
+// Person boxes arrive in the VIDEO's own pixel space (MediaPipe reads the video element
+// directly), while marker corners are in the ArUco detector's 1024-wide space. Both end up
+// on one CaptureQualityFrameSample, which carries a single frameWidth/frameHeight, so one
+// has to be converted. Person boxes are converted (not markers) because every marker
+// threshold in captureQualityConfig.ts is already fitted in detector space - rescaling
+// markers instead would silently invalidate all of them.
+function rescalePeopleToDetectorCanvas(
+	people: readonly CaptureQualityBBox[],
+	fromWidth: number,
+	fromHeight: number,
+	toWidth: number,
+	toHeight: number
+): CaptureQualityBBox[] {
+	const scaleX = toWidth / fromWidth;
+	const scaleY = toHeight / fromHeight;
+	return people.map((b) => ({
+		x: b.x * scaleX,
+		y: b.y * scaleY,
+		width: b.width * scaleX,
+		height: b.height * scaleY,
+	}));
+}
+
 interface VideoDimensions {
 	width: number;
 	height: number;
@@ -97,6 +128,8 @@ interface Props {
 	totalTrials: number;
 	captureQuality: CaptureQualitySession;
 	captureRecorderStateRef: React.MutableRefObject<CaptureRecorderState>;
+	/** Owned by the parent so the model loads once per session rather than once per trial - this component remounts at every trial boundary. */
+	personDetector: PersonDetector;
 	onRecorded: (blob: Blob, mimeType: string) => void;
 }
 
@@ -110,7 +143,14 @@ const VIDEO_CONSTRAINTS = {
 	frameRate: { ideal: 30, max: 30 },
 };
 
-function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecorderStateRef, onRecorded }: Props) {
+function TestGaitCamera({
+	trialNumber,
+	totalTrials,
+	captureQuality,
+	captureRecorderStateRef,
+	personDetector,
+	onRecorded,
+}: Props) {
 	const webcamRef = useRef<Webcam>(null);
 	// Tracked separately from webcamRef so the unmount cleanup below can stop tracks
 	// without reading webcamRef.current inside a cleanup closure (the DOM node it points
@@ -121,6 +161,16 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 	const lastTimeRef = useRef(0);
 	const lastTickAtRef = useRef(0);
 	const tickRef = useRef(0);
+	const personTickRef = useRef(0);
+	const tickProfilerRef = captureQuality.tickProfilerRef;
+
+	// The detect loop is a fresh closure every render but is only kicked off once (see the
+	// comment on `detect`), so anything that can change after mount has to be reached
+	// through a ref. `status` flipping loading -> ready is exactly such a change.
+	const personDetectorRef = useRef(personDetector);
+	useEffect(() => {
+		personDetectorRef.current = personDetector;
+	}, [personDetector]);
 
 	const [streamAttached, setStreamAttached] = useState(false);
 	const [cameraReady, setCameraReady] = useState(false);
@@ -426,6 +476,13 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 			requestAnimationFrame(detect);
 			return;
 		}
+		// Recorded HERE, at the throttle gate, not around the work below: this is the gap
+		// between two ticks actually running, which is the only figure that says whether the
+		// loop is being delivered at the configured rate. Measuring it around the work would
+		// just re-derive `total` and answer nothing.
+		if (lastTickAtRef.current !== 0) {
+			recordStage(tickProfilerRef.current, "interval", nowTick - lastTickAtRef.current);
+		}
 		lastTickAtRef.current = nowTick;
 
 		const video = webcamRef.current?.video;
@@ -445,13 +502,37 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 			hiddenRef.current.width = hiddenInputW;
 			hiddenRef.current.height = hiddenInputH;
 
+			const profiler = tickProfilerRef.current;
 			const offCtx = hiddenRef.current.getContext("2d", { willReadFrequently: true });
 			if (offCtx) {
-				offCtx.filter = "contrast(2) brightness(1.1)";
-				offCtx.drawImage(video, 0, 0, hiddenInputW, hiddenInputH);
-				const imageData = offCtx.getImageData(0, 0, hiddenInputW, hiddenInputH);
-				const unfilteredMarkers = await arDetector.detectImage(imageData);
+				const imageData = await timeStage(profiler, "draw", () => {
+					offCtx.filter = "contrast(2) brightness(1.1)";
+					offCtx.drawImage(video, 0, 0, hiddenInputW, hiddenInputH);
+					return offCtx.getImageData(0, 0, hiddenInputW, hiddenInputH);
+				});
+				const unfilteredMarkers = await timeStage(profiler, "aruco", () => arDetector.detectImage(imageData));
 				const markers = unfilteredMarkers.filter((m: { id: number }) => EXPECTED_MARKER_IDS.has(m.id));
+
+				// Round-robin: the person model is the expensive one and stillness is the
+				// least urgent thing being checked, so it runs on a fraction of the ticks.
+				// people stays null on every other tick - "did not run", not "found nobody".
+				personTickRef.current += 1;
+				const runPersonDetection = personTickRef.current % PERSON_DETECT_EVERY_N_TICKS === 0;
+				let people: CaptureQualityBBox[] | null = null;
+				if (runPersonDetection) {
+					const videoPeople = await timeStage(profiler, "person", () =>
+						personDetectorRef.current.detectPeople(video, startTimeMs)
+					);
+					if (videoPeople) {
+						people = rescalePeopleToDetectorCanvas(
+							videoPeople,
+							video.videoWidth,
+							video.videoHeight,
+							hiddenInputW,
+							hiddenInputH
+						);
+					}
+				}
 
 				// Run marker-board/lighting checks only pre-recording (see
 				// RUN_CAPTURE_QUALITY_CHECKS_WHILE_RECORDING in testGaitConfig.ts).
@@ -463,10 +544,14 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 						timestampMs: startTimeMs,
 						frameWidth: hiddenInputW,
 						frameHeight: hiddenInputH,
-						people: null,
+						people,
 						markers,
 					};
 					pushMarkerBoardFrame(session.markerBoardWindow, captureFrame);
+					// Same frame object, same coordinate space: the subject check measures
+					// distance from the subject to the BOARD, so it needs both detections
+					// together and cannot be fed a person-only sample.
+					pushSubjectPositionFrame(session.subjectPositionWindow, captureFrame);
 
 					let lightingResult: ReturnType<typeof evaluateLatestLowLightFrame> = null;
 					if (!lightingCanvasRef.current) lightingCanvasRef.current = document.createElement("canvas");
@@ -478,6 +563,7 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 					}
 					const lightCtx = lightingCanvas.getContext("2d", { willReadFrequently: true });
 					if (lightCtx) {
+						const lightingStartedAt = performance.now();
 						lightCtx.drawImage(video, 0, 0, lightW, lightH);
 						const lightingImageData = lightCtx.getImageData(0, 0, lightW, lightH);
 						// Rescale into the lighting canvas's own coordinate space - see
@@ -493,8 +579,10 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 						};
 						pushLowLightFrame(session.lowLightWindow, lightingFrame);
 						lightingResult = evaluateLatestLowLightFrame(session.lowLightWindow.frames, session.lowLightConfig);
+						recordStage(profiler, "lighting", performance.now() - lightingStartedAt);
 					}
 
+					const checksStartedAt = performance.now();
 					tickRef.current += 1;
 					if (tickRef.current % HUD_UPDATE_EVERY_N_FRAMES === 0) {
 						captureQuality.setMarkerBoardAggregate(
@@ -512,6 +600,13 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 								session.lowLightWindow.hysteresis
 							)
 						);
+						captureQuality.setSubjectPositionAggregate(
+							evaluateSubjectPositionWindowAggregate(
+								session.subjectPositionWindow.frames,
+								session.subjectPositionConfig,
+								session.subjectPositionWindow.hysteresis
+							)
+						);
 					}
 
 					recordCaptureFrame(captureRecorderStateRef.current, {
@@ -520,8 +615,17 @@ function TestGaitCamera({ trialNumber, totalTrials, captureQuality, captureRecor
 						frameHeight: hiddenInputH,
 						metrics: evaluateMarkerBoardFrame(captureFrame, session.markerBoardConfig),
 						lighting: lightingResult,
+						// Only on ticks the round robin actually ran the detector - on the rest
+						// this evaluates to personCount null and the recorder skips it.
+						subject: runPersonDetection
+							? evaluateSubjectPositionFrame(captureFrame, session.subjectPositionConfig)
+							: null,
 					});
+					recordStage(profiler, "checks", performance.now() - checksStartedAt);
 				}
+
+				recordStage(profiler, "total", performance.now() - startTimeMs);
+				completeTick(profiler, runPersonDetection);
 			}
 		}
 		requestAnimationFrame(detect);

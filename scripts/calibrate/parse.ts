@@ -48,9 +48,25 @@ export interface ParsedLightingSample {
 /** What region a recording's lightingSamples were measured over - branch on this before comparing lighting stats across recordings. "none" also covers a CQ2/CQ3 line that captured zero lighting samples. */
 export type LightingScope = "none" | "whole-frame" | "roi";
 
+/**
+ * One CQ4 person sample - a tick on which person detection actually ran. Absent ticks are
+ * simply not in the array; a gap means "not sampled", never "nobody there". tickIndex is
+ * what makes the two distinguishable and lets replay recover real elapsed time.
+ */
+export interface ParsedPersonSample {
+	tickIndex: number;
+	personCount: number;
+	subjectCentroidXNorm: number | null;
+	subjectCentroidYNorm: number | null;
+	subjectAreaNorm: number | null;
+	boardCentroidXNorm: number | null;
+	boardCentroidYNorm: number | null;
+	boardLengthNorm: number | null;
+}
+
 export interface ParsedCaptureRecording {
 	sourceLabel: string;
-	formatVersion: 1 | 2 | 3;
+	formatVersion: 1 | 2 | 3 | 4;
 	scenarioTag: string;
 	declaredSampleCount: number;
 	stride: number;
@@ -65,6 +81,10 @@ export interface ParsedCaptureRecording {
 	lightingScaleExponents: readonly number[] | null;
 	lightingSamples: ParsedLightingSample[];
 	lightingScope: LightingScope;
+	/** CQ4 only - [posExp, subjectAreaExp]. Null for CQ1/CQ2/CQ3, which predate person detection entirely. */
+	personScaleExponents?: readonly [number, number] | null;
+	/** CQ4 only. An empty array on an older format means "this recording could not have seen a person", NOT "no person was present" - never pool the two when fitting. */
+	personSamples?: ParsedPersonSample[];
 }
 
 function parseKeyInt(token: string, key: string, sourceLabel: string): number {
@@ -350,17 +370,86 @@ function parseCq3Line(line: string, sourceLabel: string): ParsedCaptureRecording
 	};
 }
 
-/** Parses one CQ1, CQ2, or CQ3 line. Throws with a message identifying sourceLabel on any malformed token. */
+/** CQ4 person token: 8 fields - tickIndex, personCount, then six "-"-nullable quantized values. See captureRecorder.ts's CQ4 header. */
+function parseCq4PersonSampleToken(
+	token: string,
+	index: number,
+	scaleExponents: [number, number],
+	sourceLabel: string
+): ParsedPersonSample {
+	const parts = token.split(":");
+	if (parts.length !== 8) {
+		throw new Error(`${sourceLabel}: malformed CQ4 person sample at index ${index}: "${token}" (expected 8 colon-separated fields)`);
+	}
+	const [posExp, areaExp] = scaleExponents;
+	const posScale = 10 ** posExp;
+	const areaScale = 10 ** areaExp;
+	const nullable = (raw: string, scale: number): number | null => {
+		if (raw === "-") return null;
+		const value = Number(raw);
+		if (!Number.isFinite(value)) {
+			throw new Error(`${sourceLabel}: non-numeric CQ4 person field at index ${index}: "${token}"`);
+		}
+		return value / scale;
+	};
+	const tickIndex = Number(parts[0]);
+	const personCount = Number(parts[1]);
+	if (!Number.isFinite(tickIndex) || !Number.isFinite(personCount)) {
+		throw new Error(`${sourceLabel}: non-numeric CQ4 person header at index ${index}: "${token}"`);
+	}
+	return {
+		tickIndex,
+		personCount,
+		subjectCentroidXNorm: nullable(parts[2], posScale),
+		subjectCentroidYNorm: nullable(parts[3], posScale),
+		subjectAreaNorm: nullable(parts[4], areaScale),
+		boardCentroidXNorm: nullable(parts[5], posScale),
+		boardCentroidYNorm: nullable(parts[6], posScale),
+		boardLengthNorm: nullable(parts[7], posScale),
+	};
+}
+
+/** CQ4 = CQ3's twelve fields plus pn=/psc=/personPayload. The marker and lighting sections are byte-identical to CQ3, so this delegates and then appends. */
+function parseCq4Line(line: string, sourceLabel: string): ParsedCaptureRecording {
+	const tokens = line.split("|");
+	if (tokens.length !== 15 || tokens[0] !== "CQ4") {
+		throw new Error(`${sourceLabel}: not a recognized CQ4 export line (expected 15 "|"-separated fields)`);
+	}
+	const base = parseCq3Line(["CQ3", ...tokens.slice(1, 12)].join("|"), sourceLabel);
+
+	const declaredPersonCount = parseKeyInt(tokens[12], "pn", sourceLabel);
+	const pscMatch = /^psc=(\d+),(\d+)$/.exec(tokens[13]);
+	if (!pscMatch) throw new Error(`${sourceLabel}: malformed "psc=" token: "${tokens[13]}"`);
+	const personScaleExponents: [number, number] = [Number(pscMatch[1]), Number(pscMatch[2])];
+
+	const personPayload = tokens[14];
+	const personSamples =
+		personPayload.length === 0
+			? []
+			: personPayload.split(";").map((tok, i) => parseCq4PersonSampleToken(tok, i, personScaleExponents, sourceLabel));
+	if (personSamples.length !== declaredPersonCount) {
+		console.warn(
+			`${sourceLabel}: declared pn=${declaredPersonCount} but person payload has ${personSamples.length} samples - using the actual count`
+		);
+	}
+
+	return { ...base, formatVersion: 4, personScaleExponents, personSamples };
+}
+
+/** Parses one CQ1, CQ2, CQ3 or CQ4 line. Throws with a message identifying sourceLabel on any malformed token. */
 export function parseCompactLine(line: string, sourceLabel: string): ParsedCaptureRecording {
+	if (line.startsWith("CQ4|")) return parseCq4Line(line, sourceLabel);
 	if (line.startsWith("CQ3|")) return parseCq3Line(line, sourceLabel);
 	if (line.startsWith("CQ2|")) return parseCq2Line(line, sourceLabel);
 	if (line.startsWith("CQ1|")) return parseCq1Line(line, sourceLabel);
-	throw new Error(`${sourceLabel}: not a recognized CQ1/CQ2/CQ3 export line`);
+	throw new Error(`${sourceLabel}: not a recognized CQ1/CQ2/CQ3/CQ4 export line`);
 }
 
-/** Parses every CQ1/CQ2/CQ3 line found in a file's text, skipping blank lines and anything not starting with "CQ1|"/"CQ2|"/"CQ3|". */
+/** Parses every CQ1/CQ2/CQ3/CQ4 line found in a file's text, skipping blank lines and anything not starting with a recognized prefix. */
 export function parseCompactExportFile(sourceLabel: string, text: string): ParsedCaptureRecording[] {
 	const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-	const cqLines = lines.filter((l) => l.startsWith("CQ1|") || l.startsWith("CQ2|") || l.startsWith("CQ3|"));
+	const cqLines = lines.filter(
+		(l) => l.startsWith("CQ1|") || l.startsWith("CQ2|") || l.startsWith("CQ3|") || l.startsWith("CQ4|")
+	);
 	return cqLines.map((line, i) => parseCompactLine(line, cqLines.length > 1 ? `${sourceLabel}#${i + 1}` : sourceLabel));
 }

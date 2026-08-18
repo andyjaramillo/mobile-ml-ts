@@ -15,6 +15,8 @@ import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
 interface Props {
 	aggregate: LowLightWindowAggregate | null;
 	config: LowLightCheckConfig;
+	/** Render as a section of DebugHudStack instead of a self-positioned floating box. */
+	embedded?: boolean;
 }
 
 // Luma/contrast-std live on a 0-255 scale, not a [0,1] fraction - toFixed(1) already
@@ -49,13 +51,13 @@ function fmtRoi(roi: { xNorm: number; yNorm: number; widthNorm: number; heightNo
 	return `${roi.xNorm.toFixed(2)},${roi.yNorm.toFixed(2)} ${roi.widthNorm.toFixed(2)}x${roi.heightNorm.toFixed(2)}`;
 }
 
-function LowLightHud({ aggregate, config }: Props) {
+function LowLightHud({ aggregate, config, embedded = false }: Props) {
 	const latest = aggregate?.latest ?? null;
 	const codes = aggregate?.activeCodes ?? [];
 	const ok = aggregate !== null && codes.length === 0 && (latest?.computableCellCount ?? 0) > 0;
 
 	return (
-		<div className="llh-root" role="status" aria-live="polite">
+		<div className={`llh-root${embedded ? " llh-embedded" : ""}`} role="status" aria-live="polite">
 			<style>{CSS}</style>
 			<div className="llh-row llh-header">
 				<span className={`llh-dot ${ok ? "llh-dot-ok" : codes.length > 0 ? "llh-dot-warning" : "llh-dot-idle"}`} />
@@ -86,6 +88,25 @@ function LowLightHud({ aggregate, config }: Props) {
 }
 
 const CSS = `
+	/* Rendered as a section of DebugHudStack rather than as its own floating box:
+	   drop the fixed positioning, the background and the width cap, and let the
+	   container own all three. */
+	.llh-root.llh-embedded {
+		position: static;
+		inset: auto;
+		transform: none;
+		margin: 0;
+		padding: 0;
+		border-radius: 0;
+		background: transparent;
+		max-width: none;
+		width: auto;
+		font-size: inherit;
+		line-height: inherit;
+	}
+	/* The container is the scroll box; a section must never clip its own values -
+	   that is what hid the lighting and residual figures on the first on-device read. */
+	.llh-root.llh-embedded .llh-row { white-space: normal; overflow: visible; text-overflow: clip; }
 	.llh-root {
 		position: fixed;
 		right: env(safe-area-inset-right, 0px);

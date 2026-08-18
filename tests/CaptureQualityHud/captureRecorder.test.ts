@@ -10,6 +10,7 @@ import type { CaptureRecorderFrameInput } from "../../src/CaptureQualityHud/capt
 import { parseCompactExportFile } from "../../scripts/calibrate/parse";
 import type { MarkerBoardFrameMetrics } from "../../src/CaptureQuality/markerBoardCheck";
 import type { LowLightFrameMetrics, LowLightRoiSource } from "../../src/CaptureQuality/lowLightCheck";
+import type { SubjectPositionFrameMetrics } from "../../src/CaptureQuality/subjectPositionCheck";
 
 function markerMetrics(i: number): MarkerBoardFrameMetrics {
 	return {
@@ -43,6 +44,20 @@ function lightingMetrics(baseLuma: number): LowLightFrameMetrics {
 	};
 }
 
+// Subject centred in a 640-wide frame, board 100px across.
+function subjectMetrics(i: number): SubjectPositionFrameMetrics {
+	return {
+		timestampMs: i,
+		personCount: 1,
+		subjectBBox: { x: 290, y: 500, width: 60, height: 160 },
+		subjectCentroid: { x: 320, y: 580 },
+		subjectAreaNorm: 0.0132,
+		boardCentroid: { x: 320, y: 700 },
+		boardLengthPx: 100,
+		startLineDistanceBoardLengths: 1.2,
+	};
+}
+
 function frameInput(i: number, roiSource: LowLightRoiSource): CaptureRecorderFrameInput {
 	return {
 		fps: 30,
@@ -57,21 +72,21 @@ function frameInput(i: number, roiSource: LowLightRoiSource): CaptureRecorderFra
 	};
 }
 
-describe("CQ3 export format", () => {
+describe("CQ4 export format", () => {
 	it("round-trips marker + ROI-scoped lighting data through the parser", () => {
 		const state = createCaptureRecorderState();
-		state.scenarioTag = "cq3 round trip";
+		state.scenarioTag = "cq4 round trip";
 		startCaptureRecording(state, 0);
 		for (let i = 0; i < 120; i++) {
 			recordCaptureFrame(state, frameInput(i, i % 3 === 0 ? "detected" : i % 3 === 1 ? "last-known" : "default"));
 		}
 
 		const exported = buildCompactExport(state);
-		expect(exported.startsWith("CQ3|")).toBe(true);
+		expect(exported.startsWith("CQ4|")).toBe(true);
 		expect(exported.length).toBeLessThanOrEqual(MAX_EXPORT_CHARS);
 
 		const [recording] = parseCompactExportFile("test", exported);
-		expect(recording.formatVersion).toBe(3);
+		expect(recording.formatVersion).toBe(4);
 		expect(recording.lightingScope).toBe("roi");
 		expect(recording.samples.length).toBe(state.samples.length);
 		expect(recording.lightingSamples.length).toBe(state.lightingSamples.length);
@@ -90,6 +105,39 @@ describe("CQ3 export format", () => {
 		}
 	});
 
+	it("round-trips person samples, keeping their real tick indices", () => {
+		const state = createCaptureRecorderState();
+		state.scenarioTag = "cq4 person round trip";
+		startCaptureRecording(state, 0);
+		// A 1-in-3 round robin: only every third tick carries subject metrics.
+		for (let i = 0; i < 60; i++) {
+			recordCaptureFrame(state, { ...frameInput(i, "detected"), subject: i % 3 === 0 ? subjectMetrics(i) : null });
+		}
+
+		const [recording] = parseCompactExportFile("test", buildCompactExport(state));
+		expect(recording.personSamples).toBeDefined();
+		expect(recording.personSamples!.length).toBe(20);
+
+		// The gaps are what prove a skipped tick was not stored as a zero-person frame.
+		const ticks = recording.personSamples!.map((s) => s.tickIndex);
+		expect(ticks[1] - ticks[0]).toBe(3);
+
+		const first = recording.personSamples![0];
+		expect(first.personCount).toBe(1);
+		expect(first.subjectCentroidXNorm).toBeCloseTo(0.5, 4);
+		expect(first.boardLengthNorm).toBeCloseTo(100 / 640, 4);
+	});
+
+	it("stores no person samples at all for a recording where detection never ran", () => {
+		const state = createCaptureRecorderState();
+		state.scenarioTag = "cq4 no detector";
+		startCaptureRecording(state, 0);
+		for (let i = 0; i < 30; i++) recordCaptureFrame(state, frameInput(i, "detected"));
+
+		const [recording] = parseCompactExportFile("test", buildCompactExport(state));
+		expect(recording.personSamples).toEqual([]);
+	});
+
 	it("stays comfortably under the byte budget at a realistic full-length recording", () => {
 		const state = createCaptureRecorderState();
 		state.scenarioTag = "long recording byte budget check";
@@ -99,7 +147,7 @@ describe("CQ3 export format", () => {
 			recordCaptureFrame(state, frameInput(i, "detected"));
 		}
 		const exported = buildCompactExport(state);
-		expect(exported.startsWith("CQ3|")).toBe(true);
+		expect(exported.startsWith("CQ4|")).toBe(true);
 		expect(exported.length).toBeLessThanOrEqual(MAX_EXPORT_CHARS);
 	});
 });

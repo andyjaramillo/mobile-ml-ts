@@ -2,13 +2,26 @@
 // it is also importable from the offline scripts/calibrate/ CLI via the same code the
 // on-device HUD uses to build an export string - one encoder, one decoder, no drift.
 //
-// EXPORT FORMAT (v3, "CQ3"): the recording device is a phone with no file system access
+// EXPORT FORMAT (v4, "CQ4"): the recording device is a phone with no file system access
 // the user can reach - the only path off the device is copy -> paste into a chat
 // message. That forces a single-line, character-budgeted format. The parser
-// (scripts/calibrate/parse.ts) still accepts CQ1 and CQ2 lines, since the committed
-// calibration recordings are in those formats, so CQ3 is a new prefix, not a rewrite.
+// (scripts/calibrate/parse.ts) still accepts CQ1, CQ2 and CQ3 lines, since the committed
+// calibration recordings are in those formats, so CQ4 is a new prefix, not a rewrite.
 //
-//   CQ3|<tag>|n=<count>|stride=<stride>|fps=<meanFps>|res=<W>x<H>|sc=<a>,<d>,<r>|<samples>|lg=<cols>x<rows>|ln=<lightCount>|lsc=<lumaExp>,<contrastExp>,<roiExp>|<lightSamples>
+//   CQ4|<tag>|n=<count>|stride=<stride>|fps=<meanFps>|res=<W>x<H>|sc=<a>,<d>,<r>|<samples>|lg=<cols>x<rows>|ln=<lightCount>|lsc=<lumaExp>,<contrastExp>,<roiExp>|<lightSamples>|pn=<personCount>|psc=<posExp>,<areaExp>|<personSamples>
+//
+// <personSamples> is `;`-joined tokens of 8 fields:
+//   <tickIndex>:<personCount>:<cx>:<cy>:<areaNorm>:<boardCx>:<boardCy>:<boardLenNorm>
+// recorded ONLY on ticks where person detection actually ran (it is round-robined - see
+// sampling.personDetectEveryNTicks), which is why each token carries its own tickIndex:
+// the gaps are uneven relative to the marker samples, and replay needs the real elapsed
+// time between two detections to reconstruct a per-second speed. Positions are normalized
+// to the frame (cx/cy by width/height, boardLenNorm by width) so a recording stays valid
+// across a detector-resolution change, the way the marker metrics already are. Fields are
+// RAW INPUTS, not derived metrics: replay feeds them back through the real
+// subjectPositionCheck code rather than re-deriving distance or speed, matching how the
+// marker and lighting sections already work. "-" encodes an unavailable field (no subject,
+// or no measurable board).
 //
 // <samples> is `;`-joined `<bitmask>:<area>:<diag>:<rot>:<detArea>` tokens, oldest first,
 // unchanged from CQ2.
@@ -32,6 +45,7 @@ import { MARKER_BOARD, LIGHTING_GRID } from "../CaptureQuality/captureQualityCon
 import type { LightingRoiRect } from "../CaptureQuality/captureQualityConfig";
 import type { MarkerBoardFrameMetrics } from "../CaptureQuality/markerBoardCheck";
 import type { LowLightFrameMetrics, LowLightRoiSource } from "../CaptureQuality/lowLightCheck";
+import type { SubjectPositionFrameMetrics } from "../CaptureQuality/subjectPositionCheck";
 
 const EXPECTED_MARKER_IDS = MARKER_BOARD.expectedMarkerIds;
 
@@ -63,6 +77,18 @@ const ROI_SCALE_EXP = 3;
 const ROI_SCALE = 10 ** ROI_SCALE_EXP;
 
 const ROI_SOURCE_CODE: Record<LowLightRoiSource, number> = { detected: 0, "last-known": 1, default: 2 };
+
+// Normalized [0,1] positions, 4 digits - roughly 0.1px on a 1024-wide detector canvas, so
+// this does not spend precision the source data lacks. Subject area is a small fraction of
+// the frame like the marker areas, so it reuses their 6-digit convention.
+const POS_SCALE_EXP = 4;
+const SUBJECT_AREA_SCALE_EXP = 6;
+const POS_SCALE = 10 ** POS_SCALE_EXP;
+const SUBJECT_AREA_SCALE = 10 ** SUBJECT_AREA_SCALE_EXP;
+
+// Person samples arrive at ~1/personDetectEveryNTicks the marker rate and each is small,
+// so this cap is generous relative to MAX_SAMPLES rather than proportional to it.
+const MAX_PERSON_SAMPLES = 150;
 
 // Keeps a realistic worst-case export (long tag, every sample fully populated) safely
 // under MAX_EXPORT_CHARS without relying on the truncation safety net below.
@@ -104,6 +130,24 @@ export interface CaptureRecorderLightingSample {
 	roiSource: LowLightRoiSource;
 }
 
+/**
+ * One tick on which person detection actually ran. Everything is normalized to the frame
+ * and stored raw - see the CQ4 note in the module header for why these are inputs rather
+ * than derived metrics.
+ */
+export interface CaptureRecorderPersonSample {
+	/** Raw tick index (not sample index), so replay can recover the real gap between two detections. */
+	tickIndex: number;
+	personCount: number;
+	subjectCentroidXNorm: number | null;
+	subjectCentroidYNorm: number | null;
+	subjectAreaNorm: number | null;
+	boardCentroidXNorm: number | null;
+	boardCentroidYNorm: number | null;
+	/** Board forward-axis length / frameWidth. The unit every subject distance is expressed in. */
+	boardLengthNorm: number | null;
+}
+
 export interface CaptureRecorderState {
 	scenarioTag: string;
 	recording: boolean;
@@ -111,6 +155,7 @@ export interface CaptureRecorderState {
 	startedAtMs: number | null;
 	samples: CaptureRecorderRawSample[];
 	lightingSamples: CaptureRecorderLightingSample[];
+	personSamples: CaptureRecorderPersonSample[];
 	stride: number;
 	tickCount: number;
 	frameWidth: number | null;
@@ -124,6 +169,7 @@ export function createCaptureRecorderState(): CaptureRecorderState {
 		startedAtMs: null,
 		samples: [],
 		lightingSamples: [],
+		personSamples: [],
 		stride: 1,
 		tickCount: 0,
 		frameWidth: null,
@@ -137,6 +183,7 @@ export function startCaptureRecording(state: CaptureRecorderState, nowMs: number
 	state.startedAtMs = nowMs;
 	state.samples = [];
 	state.lightingSamples = [];
+	state.personSamples = [];
 	state.stride = 1;
 	state.tickCount = 0;
 	state.frameWidth = null;
@@ -152,6 +199,7 @@ export function clearCaptureRecording(state: CaptureRecorderState): void {
 	state.startedAtMs = null;
 	state.samples = [];
 	state.lightingSamples = [];
+	state.personSamples = [];
 	state.stride = 1;
 	state.tickCount = 0;
 	state.frameWidth = null;
@@ -217,6 +265,13 @@ export interface CaptureRecorderFrameInput {
 	 * lighting frame ready (e.g. lighting canvas not yet sized).
 	 */
 	lighting?: CaptureRecorderLightingInput | null;
+	/**
+	 * Result of evaluateSubjectPositionFrame for the SAME tick. Null/omitted on the ticks
+	 * where person detection was skipped by the round robin - those must not be stored,
+	 * since a stored "no subject" would be indistinguishable from a real miss during
+	 * replay and would fit the detection thresholds against the round robin itself.
+	 */
+	subject?: SubjectPositionFrameMetrics | null;
 }
 
 /**
@@ -228,6 +283,14 @@ export interface CaptureRecorderFrameInput {
 export function recordCaptureFrame(state: CaptureRecorderState, input: CaptureRecorderFrameInput): void {
 	if (!state.recording) return;
 	state.tickCount += 1;
+
+	// Person samples are recorded BEFORE the stride gate. Person detection is already
+	// decimated by its own round robin, so applying the marker stride on top would compound
+	// the two and could leave a long recording with too few detections to fit anything.
+	if (input.subject && input.subject.personCount !== null && input.frameWidth > 0 && input.frameHeight > 0) {
+		recordPersonSample(state, input.subject, input.frameWidth, input.frameHeight);
+	}
+
 	if (state.tickCount % state.stride !== 0) return;
 
 	if (state.frameWidth === null) {
@@ -264,6 +327,27 @@ export function recordCaptureFrame(state: CaptureRecorderState, input: CaptureRe
 	}
 }
 
+function recordPersonSample(
+	state: CaptureRecorderState,
+	subject: SubjectPositionFrameMetrics,
+	frameWidth: number,
+	frameHeight: number
+): void {
+	state.personSamples.push({
+		tickIndex: state.tickCount,
+		personCount: subject.personCount ?? 0,
+		subjectCentroidXNorm: subject.subjectCentroid === null ? null : subject.subjectCentroid.x / frameWidth,
+		subjectCentroidYNorm: subject.subjectCentroid === null ? null : subject.subjectCentroid.y / frameHeight,
+		subjectAreaNorm: subject.subjectAreaNorm,
+		boardCentroidXNorm: subject.boardCentroid === null ? null : subject.boardCentroid.x / frameWidth,
+		boardCentroidYNorm: subject.boardCentroid === null ? null : subject.boardCentroid.y / frameHeight,
+		boardLengthNorm: subject.boardLengthPx === null ? null : subject.boardLengthPx / frameWidth,
+	});
+	if (state.personSamples.length > MAX_PERSON_SAMPLES) {
+		state.personSamples = state.personSamples.filter((_, i) => i % 2 === 0);
+	}
+}
+
 export function getElapsedMs(state: CaptureRecorderState, nowMs: number): number {
 	if (state.startedAtMs === null) return 0;
 	return Math.max(0, nowMs - state.startedAtMs);
@@ -291,10 +375,24 @@ function encodeDistribution(d: DistributionSummary, scale: number): string {
 	return [d.min, d.p25, d.median, d.p75, d.max, d.mean].map((v) => Math.round(v * scale)).join(":");
 }
 
+function encodePersonSample(s: CaptureRecorderPersonSample): string {
+	return [
+		String(s.tickIndex),
+		String(s.personCount),
+		encodeMetric(s.subjectCentroidXNorm, POS_SCALE),
+		encodeMetric(s.subjectCentroidYNorm, POS_SCALE),
+		encodeMetric(s.subjectAreaNorm, SUBJECT_AREA_SCALE),
+		encodeMetric(s.boardCentroidXNorm, POS_SCALE),
+		encodeMetric(s.boardCentroidYNorm, POS_SCALE),
+		encodeMetric(s.boardLengthNorm, POS_SCALE),
+	].join(":");
+}
+
 function buildLine(
 	state: CaptureRecorderState,
 	samples: readonly CaptureRecorderRawSample[],
-	lightingSamples: readonly CaptureRecorderLightingSample[]
+	lightingSamples: readonly CaptureRecorderLightingSample[],
+	personSamples: readonly CaptureRecorderPersonSample[]
 ): string {
 	const tag = sanitizeTag(state.scenarioTag);
 	const res =
@@ -312,8 +410,9 @@ function buildLine(
 			return `${encodeDistribution(s.luma, LUMA_SCALE)}:${encodeDistribution(s.contrast, CONTRAST_SCALE)}:${roiTokens.join(":")}:${ROI_SOURCE_CODE[s.roiSource]}`;
 		})
 		.join(";");
+	const personPayload = personSamples.map(encodePersonSample).join(";");
 	return [
-		"CQ3",
+		"CQ4",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
@@ -325,6 +424,9 @@ function buildLine(
 		`ln=${lightingSamples.length}`,
 		`lsc=${LUMA_SCALE_EXP},${CONTRAST_SCALE_EXP},${ROI_SCALE_EXP}`,
 		lightingPayload,
+		`pn=${personSamples.length}`,
+		`psc=${POS_SCALE_EXP},${SUBJECT_AREA_SCALE_EXP}`,
+		personPayload,
 	].join("|");
 }
 
@@ -339,11 +441,18 @@ function buildLine(
 export function buildCompactExport(state: CaptureRecorderState): string {
 	let keep = state.samples.length;
 	let lightKeep = state.lightingSamples.length;
-	let line = buildLine(state, state.samples, state.lightingSamples);
+	let personKeep = state.personSamples.length;
+	let line = buildLine(state, state.samples, state.lightingSamples, state.personSamples);
 	while (line.length > MAX_EXPORT_CHARS && keep > 0) {
 		keep = Math.floor(keep * 0.9);
 		lightKeep = Math.min(lightKeep, keep);
-		line = buildLine(state, state.samples.slice(0, keep), state.lightingSamples.slice(0, lightKeep));
+		personKeep = Math.min(personKeep, keep);
+		line = buildLine(
+			state,
+			state.samples.slice(0, keep),
+			state.lightingSamples.slice(0, lightKeep),
+			state.personSamples.slice(0, personKeep)
+		);
 	}
 	return line;
 }
