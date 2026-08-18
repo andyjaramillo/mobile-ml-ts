@@ -20,6 +20,15 @@ import {
 	resetLowLightFrameWindow,
 } from "../CaptureQuality/lowLightCheck";
 import type { LowLightCheckConfig, LowLightFrameWindow } from "../CaptureQuality/lowLightCheck";
+import {
+	createSubjectPositionFrameWindow,
+	defaultSubjectPositionCheckConfig,
+	resetSubjectPositionFrameWindow,
+} from "../CaptureQuality/subjectPositionCheck";
+import type {
+	SubjectPositionCheckConfig,
+	SubjectPositionFrameWindow,
+} from "../CaptureQuality/subjectPositionCheck";
 import { DEFAULTS as CAPTURE_QUALITY_DEFAULTS } from "../CaptureQuality/captureQualityConfig";
 
 export interface CaptureQualitySessionState {
@@ -27,6 +36,8 @@ export interface CaptureQualitySessionState {
 	markerBoardConfig: MarkerBoardCheckConfig;
 	lowLightWindow: LowLightFrameWindow;
 	lowLightConfig: LowLightCheckConfig;
+	subjectPositionWindow: SubjectPositionFrameWindow;
+	subjectPositionConfig: SubjectPositionCheckConfig;
 }
 
 export function createCaptureQualitySessionState(): CaptureQualitySessionState {
@@ -35,6 +46,15 @@ export function createCaptureQualitySessionState(): CaptureQualitySessionState {
 		markerBoardConfig: defaultMarkerBoardCheckConfig(CAPTURE_QUALITY_DEFAULTS),
 		lowLightWindow: createLowLightFrameWindow(CAPTURE_QUALITY_DEFAULTS.sampling.liveWindowFrameCount),
 		lowLightConfig: defaultLowLightCheckConfig(CAPTURE_QUALITY_DEFAULTS),
+		// Sized in TICKS like the others, but person detection only runs on one tick in
+		// personDetectEveryNTicks - so this window holds proportionally fewer actual
+		// detections than the marker window holds marker samples. It is scaled up to keep a
+		// comparable number of DETECTIONS in view; sizing it identically would leave the
+		// subject aggregation averaging over ~5 samples.
+		subjectPositionWindow: createSubjectPositionFrameWindow(
+			CAPTURE_QUALITY_DEFAULTS.sampling.liveWindowFrameCount * CAPTURE_QUALITY_DEFAULTS.sampling.personDetectEveryNTicks
+		),
+		subjectPositionConfig: defaultSubjectPositionCheckConfig(CAPTURE_QUALITY_DEFAULTS),
 	};
 }
 
@@ -48,4 +68,5 @@ export function createCaptureQualitySessionState(): CaptureQualitySessionState {
 export function resetCaptureQualitySessionForNewTake(state: CaptureQualitySessionState): void {
 	resetMarkerBoardFrameWindow(state.markerBoardWindow);
 	resetLowLightFrameWindow(state.lowLightWindow);
+	resetSubjectPositionFrameWindow(state.subjectPositionWindow);
 }

@@ -6,6 +6,7 @@
 // LowLightHud), so the debug chips can be hidden to see what a patient would actually see.
 // Harness-only, same as MarkerBoardHud.tsx - not ported into Website as-is.
 import { pickGuidanceMessage } from "./captureQualityGuidance";
+import type { SubjectPositionWindowAggregate } from "../CaptureQuality/subjectPositionCheck";
 import type { GuidanceSelectionCode } from "./captureQualityGuidance";
 import type { LowLightWindowAggregate } from "../CaptureQuality/lowLightCheck";
 import type { MarkerBoardCheckConfig, MarkerBoardWindowAggregate } from "../CaptureQuality/markerBoardCheck";
@@ -15,8 +16,16 @@ interface Props {
 	lowLightAggregate: LowLightWindowAggregate | null;
 	/** Same config the page's own marker-board check runs with - supplies the ideal-band boundaries for the IDEAL positive state (see captureQualityGuidance.ts's pickGuidanceMessage). Same prop convention as MarkerBoardHud's `config`. */
 	markerBoardConfig: MarkerBoardCheckConfig;
+	/** Optional: omit (or pass null) and the banner behaves exactly as it did before subject detection existed - the fail-open path when the person model is unavailable. */
+	subjectAggregate?: SubjectPositionWindowAggregate | null;
 	showDebugHud: boolean;
 	onToggleDebugHud: () => void;
+	/**
+	 * Patient view: hides the debug toggle entirely, so the banner is exactly what a customer
+	 * sees. The toggle is a harness affordance and a clinician must never be one stray tap
+	 * from a screen full of developer numbers.
+	 */
+	hideDebugToggle?: boolean;
 	/** Distance from the safe-area top inset, in px - callers tune this to clear their own top chrome (see MarkerBoardHud/RecorderPanel's identical prop convention). */
 	topOffsetPx?: number;
 }
@@ -30,8 +39,8 @@ function toneFor(code: GuidanceSelectionCode): "ok" | "pending" | "critical" | "
 	return "warning";
 }
 
-function GuidanceBanner({ markerBoardAggregate, lowLightAggregate, markerBoardConfig, showDebugHud, onToggleDebugHud, topOffsetPx = 0 }: Props) {
-	const selection = pickGuidanceMessage(markerBoardAggregate, lowLightAggregate, markerBoardConfig.thresholds);
+function GuidanceBanner({ markerBoardAggregate, lowLightAggregate, markerBoardConfig, subjectAggregate = null, showDebugHud, onToggleDebugHud, hideDebugToggle = false, topOffsetPx = 0 }: Props) {
+	const selection = pickGuidanceMessage(markerBoardAggregate, lowLightAggregate, markerBoardConfig.thresholds, subjectAggregate);
 	const tone = toneFor(selection.code);
 
 	return (
@@ -43,9 +52,11 @@ function GuidanceBanner({ markerBoardAggregate, lowLightAggregate, markerBoardCo
 		>
 			<style>{CSS}</style>
 			<span className="gb-message">{selection.message}</span>
-			<button type="button" className="gb-toggle" onClick={onToggleDebugHud} aria-pressed={showDebugHud}>
-				{showDebugHud ? "Hide debug" : "Show debug"}
-			</button>
+			{!hideDebugToggle && (
+				<button type="button" className="gb-toggle" onClick={onToggleDebugHud} aria-pressed={showDebugHud}>
+					{showDebugHud ? "Hide debug" : "Show debug"}
+				</button>
+			)}
 		</div>
 	);
 }

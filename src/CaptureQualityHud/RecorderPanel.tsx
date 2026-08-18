@@ -16,6 +16,8 @@ interface Props {
 	stateRef: MutableRefObject<CaptureRecorderState>;
 	/** Distance from the safe-area top inset, in px. Defaults to the RealTimeProcessor.tsx layout (below its model/facing-mode <select> pair); callers with different top chrome (e.g. TestGait's setup instructions) can push this panel down. */
 	topOffsetPx?: number;
+	/** Render as a section of DebugHudStack instead of a self-positioned floating box. */
+	embedded?: boolean;
 }
 
 // Top-anchored and slim: the board sits low-centre in frame, and MarkerBoardHud already
@@ -28,7 +30,7 @@ function formatElapsed(ms: number): string {
 	return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function RecorderPanel({ stateRef, topOffsetPx = 40 }: Props) {
+function RecorderPanel({ stateRef, topOffsetPx = 40, embedded = false }: Props) {
 	const [tagInput, setTagInput] = useState(stateRef.current.scenarioTag);
 	const [isRecording, setIsRecording] = useState(stateRef.current.recording);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "fallback">("idle");
@@ -103,7 +105,10 @@ function RecorderPanel({ stateRef, topOffsetPx = 40 }: Props) {
 	}
 
 	return (
-		<div className="crp-root" style={{ top: `calc(env(safe-area-inset-top, 0px) + ${topOffsetPx}px)` }}>
+		<div
+			className={`crp-root${embedded ? " crp-embedded" : ""}`}
+			style={embedded ? undefined : { top: `calc(env(safe-area-inset-top, 0px) + ${topOffsetPx}px)` }}
+		>
 			<style>{CSS}</style>
 			<div className="crp-row">
 				<input
@@ -140,6 +145,25 @@ function RecorderPanel({ stateRef, topOffsetPx = 40 }: Props) {
 }
 
 const CSS = `
+	/* Rendered as a section of DebugHudStack rather than as its own floating box:
+	   drop the fixed positioning, the background and the width cap, and let the
+	   container own all three. */
+	.crp-root.crp-embedded {
+		position: static;
+		inset: auto;
+		transform: none;
+		margin: 0;
+		padding: 0;
+		border-radius: 0;
+		background: transparent;
+		max-width: none;
+		width: auto;
+		font-size: inherit;
+		line-height: inherit;
+	}
+	/* The container is the scroll box; a section must never clip its own values -
+	   that is what hid the lighting and residual figures on the first on-device read. */
+	.crp-root.crp-embedded .crp-row { white-space: normal; overflow: visible; text-overflow: clip; }
 	.crp-root {
 		position: fixed;
 		left: env(safe-area-inset-left, 0px);

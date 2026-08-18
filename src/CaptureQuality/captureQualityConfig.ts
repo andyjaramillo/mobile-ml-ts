@@ -181,12 +181,64 @@ export interface MarkerBoardThresholds {
 	persistentMissThresholdMs: number;
 }
 
+/**
+ * MEASURED 2026-08-17/18 against seven recordings with a real subject (calibration/*.cq4.txt).
+ *
+ * THE POSITION SIGNAL IS THE VERTICAL GAP BETWEEN THE BOARD AND THE SUBJECT, as a fraction
+ * of frame height: `(boardCentroidY - subjectCentroidY) / frameHeight`. Two earlier signals
+ * were measured and discarded, in this order:
+ *
+ *   1. Distance from the board centroid, in board lengths. Standing at the line reads
+ *      2.78-2.84 and standing too far back reads 2.77-2.98 - the same number for both. The
+ *      camera looks down the walk path, so stepping back moves the subject TOWARD the
+ *      camera: the centroid barely translates while the box grows. Degenerate.
+ *   2. Subject bbox area. Separated cleanly on the first six recordings (0.16 at the line vs
+ *      0.30 too far back) and then failed on the seventh, which added lateral movement: area
+ *      correlates -0.774 with distance from the frame centre, because a subject near the
+ *      frame edge has their box CLIPPED. The same patient at the same distance read 0.30 in
+ *      the centre and 0.10 at the edge, passing as "good to go". Unusable.
+ *
+ * The vertical gap survives both. It does not care where the subject stands horizontally, so
+ * edge clipping cannot touch it (horizontal truncation does not move the vertical centroid),
+ * and measuring the subject AGAINST THE BOARD rather than against the frame makes it
+ * invariant to camera tilt - tilt the phone and both move together. Measured separation:
+ * 0.204-0.259 at the line, 0.134-0.170 too far back. Larger gap = subject higher in frame =
+ * further down the walk path; smaller gap = nearer the camera = further back.
+ *
+ * Requires the board to be visible. When it is not, there is no signal and the check goes
+ * quiet rather than guessing - board framing is the marker check's job anyway.
+ */
 export interface SubjectPositionThresholds {
-	displacementNormThreshold: number;
-	driftThresholdNorm: number;
-	areaChangeMaxPct: number;
+	/**
+	 * Board-to-subject vertical gap at/below which the subject reads as too far BACK from the
+	 * start line - i.e. too close to the camera. Reads backwards until the geometry clicks.
+	 */
+	tooFarBackGapNorm: number;
+	/** Hysteresis clear level for tooFarBackGapNorm - the gap must rise above THIS before the nudge clears. */
+	tooFarBackClearGapNorm: number;
+	/** The opposite bound: gap at/above which the subject has moved too far FORWARD, down the walk path away from the camera. */
+	tooFarForwardGapNorm: number;
+	/** Hysteresis clear level for tooFarForwardGapNorm. */
+	tooFarForwardClearGapNorm: number;
+	/**
+	 * Minimum recency-weighted fraction of the window in which at least one person was
+	 * detected, before subject geometry is trusted at all. Mirrors
+	 * markerBoard.minimumFullSetWeight.
+	 */
+	minimumDetectionWeight: number;
+	/** Hysteresis clear level for minimumDetectionWeight. */
+	minimumDetectionClearWeight: number;
+	/** Recency-weighted fraction of detection frames showing more than one person before MULTIPLE_PEOPLE fires. */
+	multiplePeopleWeight: number;
+	/**
+	 * NOT A GATE. Coefficient of variation of the subject's bbox area - reported on the debug
+	 * HUD only. Stillness is not something this feature warns about. Retained because it is
+	 * free and is the signal that would drive a stationarity check if one were ever wanted:
+	 * measured 0.03 standing still, 0.12 fidgeting, 0.73 walking away. (Centroid SPEED is not
+	 * that signal - walking directly away from the camera produced a LOWER median speed than
+	 * fidgeting in place, because the box shrinks rather than translating.)
+	 */
 	areaCoefficientOfVariationMax: number;
-	startLineDistanceNorm: number;
 }
 
 export interface MultiPersonThresholds {
@@ -279,6 +331,15 @@ export interface SamplingConfig {
 	ewmaReferenceTickHz: number;
 	/** Rate the live detect loop is throttled to, decoupled from the display refresh. */
 	liveTickHz: number;
+	/**
+	 * Person detection runs on every Nth tick, not every tick - the two detectors share
+	 * one frame budget and the subject is being checked for STILLNESS, which is the least
+	 * urgent thing in the loop. Ticks where it does not run leave
+	 * CaptureQualityFrameSample.people as null ("did not run"), never [] ("ran, found
+	 * nobody") - see that field's doc; conflating them turns a skipped tick into a false
+	 * SUBJECT_NOT_DETECTED.
+	 */
+	personDetectEveryNTicks: number;
 	postRecordingSampleFraction: number;
 	postRecordingSampleWindow: "middle" | "start" | "end";
 }
@@ -461,12 +522,36 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// latter; nothing in this dataset pins down a tighter number.
 		persistentMissThresholdMs: 500,
 	},
+	// MEASURED 2026-08-17/18 against seven recordings with a real subject, on the real board,
+	// on the real phone. See SubjectPositionThresholds for the signal and the two earlier
+	// signals that were measured and discarded.
 	subjectPosition: {
-		displacementNormThreshold: 0.01, // UNCALIBRATED - carried from T_disp_norm (fraction of frame diagonal)
-		driftThresholdNorm: 5.0, // UNCALIBRATED, PIXEL UNIT BUG - prototype's T_drift_norm is named as if normalized but is compared directly against raw pixel displacement in 2SubjectNotAtStart.tsx; the value 5.0 is meaningless as a [0,1] fraction. Carried as-is so the bug is visible here rather than silently "fixed" with a guessed conversion; must be re-derived in normalized units during calibration.
-		areaChangeMaxPct: 0.5, // UNCALIBRATED - carried from T_area
-		areaCoefficientOfVariationMax: 0.12, // UNCALIBRATED - carried from T_area_cv
-		startLineDistanceNorm: 500, // UNCALIBRATED, PIXEL UNIT BUG - prototype's distance_from_start (500) is raw pixels, not normalized; needs conversion (e.g. divide by frame diagonal) during calibration, not a resolution-independent value as-is
+		// MEASURED. Board-to-subject vertical gap, as a fraction of frame height:
+		//   at-start-still      0.251 - 0.259
+		//   at-start-fidget     0.204 - 0.230
+		//   too-far-back        0.157 - 0.170
+		//   far-back-lateral    0.134 - 0.158  (includes a full lateral sweep of the frame)
+		// 0.187 sits midway between the at-the-line floor (0.204) and the too-far-back
+		// ceiling (0.170), leaving ~0.017 either side. Symmetric by construction rather than
+		// tuned toward either class.
+		tooFarBackGapNorm: 0.187,
+		tooFarBackClearGapNorm: 0.20,
+		// MEASURED from the walking-away recording, whose gap grows monotonically as the
+		// subject walks down the path: 0.217 at the line through 0.396 at the far end. The
+		// largest gap ever seen AT the line is 0.259 (still), so the ceiling has to sit above
+		// that; 0.30 clears it and still catches the walk-away well before it bottoms out.
+		tooFarForwardGapNorm: 0.30,
+		tooFarForwardClearGapNorm: 0.28,
+		// MEASURED: person detection fired on 100% of detection ticks in every recording with
+		// someone in frame, and 0% in subject-absent. Total separation, so this gate does easy
+		// work; 0.6 mirrors markerBoard.minimumFullSetWeight rather than being fitted.
+		minimumDetectionWeight: 0.6,
+		minimumDetectionClearWeight: 0.67,
+		// MEASURED: the two-person recording read exactly 2 people on every detection tick and
+		// every single-person recording read exactly 1. Again total separation.
+		multiplePeopleWeight: 0.5,
+		// NOT A GATE - see the field doc.
+		areaCoefficientOfVariationMax: 0.2,
 	},
 	multiPerson: {
 		proximatePeopleMinGapNorm: 0.05, // UNCALIBRATED GUESS - no prototype precedent; minimum gap between two person bboxes (fraction of frame width) before flagging PROXIMATE_PEOPLE instead of MULTIPLE_PEOPLE
@@ -515,6 +600,12 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// every EWMA and invalidates the pinned replay expectations.
 		ewmaReferenceTickHz: 30,
 		liveTickHz: 8, // UNCALIBRATED - no measurement of how slow the checks can tick before guidance feels laggy
+		// UNCALIBRATED. 3 is a starting point, not a measurement: it keeps person detection
+		// at roughly 1Hz against the ~3Hz the device actually delivers, which is ample for a
+		// stationarity check on a standing patient. Raise it (detect less often) before
+		// lowering the tick rate if the budget gets tight - a laggy start-line hint is a far
+		// cheaper failure than a laggy marker/lighting banner.
+		personDetectEveryNTicks: 3,
 		postRecordingSampleFraction: 0.5, // spec-given: sample the middle 50% of the recorded video for most post-recording checks
 		postRecordingSampleWindow: "middle", // spec-given positioning convention; not every check will use it (e.g. VIDEO_TOO_SHORT/VIDEO_TOO_LONG need the full timeline, not a sampled window)
 	},

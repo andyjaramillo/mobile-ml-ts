@@ -31,6 +31,8 @@ export const HUD_UPDATE_EVERY_N_FRAMES = 3; // same throttle RealTimeProcessor.t
 export const DETECTOR_INPUT_MAX_W = 1024;
 export const DETECT_TICK_INTERVAL_MS = 1000 / CAPTURE_QUALITY_DEFAULTS.sampling.liveTickHz;
 
+export const PERSON_DETECT_EVERY_N_TICKS = CAPTURE_QUALITY_DEFAULTS.sampling.personDetectEveryNTicks;
+
 // CameraRecording's cameraReadyStabilityTimeoutRef delay after loadedmetadata before
 // enabling the record button — avoids a flash of "ready" right as the stream attaches.
 export const CAMERA_READY_STABILITY_DELAY_MS = 200;

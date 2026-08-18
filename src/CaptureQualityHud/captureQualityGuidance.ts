@@ -13,12 +13,19 @@ import { DEFAULTS } from "../CaptureQuality/captureQualityConfig";
 import type { MarkerBoardThresholds } from "../CaptureQuality/captureQualityConfig";
 import type { LowLightWindowAggregate } from "../CaptureQuality/lowLightCheck";
 import type { MarkerBoardWindowAggregate } from "../CaptureQuality/markerBoardCheck";
+import type { SubjectPositionWindowAggregate } from "../CaptureQuality/subjectPositionCheck";
 import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
 
-/** Codes this banner is able to explain. A narrower set than CAPTURE_QUALITY_ISSUE_CODES on purpose - subject/lighting-only codes not sourced from the two aggregates below (e.g. SUBJECT_NOT_DETECTED) have no message here yet. */
+/**
+ * Codes this banner can explain. Narrower than CAPTURE_QUALITY_ISSUE_CODES on purpose: only
+ * the ones the product set out to warn about - too many people, subject too far back from
+ * the start line, board not fully visible, board too far or too close - plus lighting.
+ * SUBJECT_NOT_STATIONARY and START_LINE_UNKNOWN are deliberately absent: neither is a thing
+ * this feature reports, and the check no longer emits them as gates.
+ */
 type GuidanceCode = Extract<
 	CaptureQualityIssueCode,
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "LOW_CONTRAST"
+	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "LOW_CONTRAST" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_DETECTED" | "SUBJECT_NOT_AT_START_LINE"
 >;
 
 /**
@@ -41,6 +48,9 @@ export const CAPTURE_QUALITY_GUIDANCE_MESSAGES: Record<GuidanceSelectionCode, st
 	MARKER_TOO_LARGE: "Step back a little so there's room for the whole walk path in view.",
 	LOW_LIGHT: "Add more light to the room.",
 	LOW_CONTRAST: "Reduce glare or backlight on the floor marker.",
+	MULTIPLE_PEOPLE: "Only the patient should be in view - ask others to step out of frame.",
+	SUBJECT_NOT_DETECTED: "Make sure the patient is standing in view of the camera.",
+	SUBJECT_NOT_AT_START_LINE: "Ask the patient to move up to the floor marker to start.",
 	OK: "Setup looks good.",
 	IDEAL: "Setup looks good - you're at the ideal distance.",
 	PENDING: "Checking your setup...",
@@ -86,13 +96,42 @@ function isInIdealBand(area: number | null, thresholds: Pick<MarkerBoardThreshol
 export function pickGuidanceMessage(
 	markerBoardAggregate: MarkerBoardWindowAggregate | null,
 	lowLightAggregate: LowLightWindowAggregate | null,
-	markerBoardThresholds: Pick<MarkerBoardThresholds, "sizeIdealLowerNorm" | "sizeIdealUpperNorm"> = DEFAULTS.markerBoard
+	markerBoardThresholds: Pick<MarkerBoardThresholds, "sizeIdealLowerNorm" | "sizeIdealUpperNorm"> = DEFAULTS.markerBoard,
+	subjectAggregate: SubjectPositionWindowAggregate | null = null
 ): GuidanceSelection {
 	if (markerBoardAggregate === null) {
 		return { code: "PENDING", message: CAPTURE_QUALITY_GUIDANCE_MESSAGES.PENDING };
 	}
 
 	const markerCode = markerBoardAggregate.activeCodes[0];
+	const subjectCode = subjectAggregate?.activeCodes[0] ?? null;
+
+	// A board the camera genuinely cannot resolve outranks everything: there is no point
+	// telling someone where to stand while the board itself is unusable.
+	//
+	// "Genuinely" is the operative word, and getting it wrong made the subject codes
+	// unreachable. Ranking ANY blocking marker code above the subject meant a single-frame
+	// marker blip masked a sustained subject problem - replaying subject-too-far-back, the
+	// board reads OK on 44 of 47 steps, yet one MARKER_OBSTRUCTED step won the banner and the
+	// operator never saw "move up to the floor marker". So the board only outranks the
+	// subject when its own SMOOTHED visibility score says the board is actually not
+	// resolvable, rather than when a momentary code happens to be active.
+	const boardUnresolvable =
+		markerBoardAggregate.weightedFullSetScore < DEFAULTS.markerBoard.minimumFullSetWeight;
+	if (markerCode && boardUnresolvable && BLOCKING_MARKER_CODES.has(markerCode) && isGuidanceCode(markerCode)) {
+		return { code: markerCode, message: CAPTURE_QUALITY_GUIDANCE_MESSAGES[markerCode] };
+	}
+
+	// Subject next: a person in the wrong place, or too many of them, is more actionable than
+	// a board nudge once the board is basically visible. A subject aggregate that is null, or
+	// that has no codes because person detection never ran, contributes nothing and cannot
+	// block the green light - that is the fail-open path.
+	if (subjectCode && isGuidanceCode(subjectCode)) {
+		return { code: subjectCode, message: CAPTURE_QUALITY_GUIDANCE_MESSAGES[subjectCode] };
+	}
+
+	// A blocking marker code that did NOT clear the "unresolvable" bar above still outranks
+	// lighting and the size nudges - it just no longer outranks the subject.
 	if (markerCode && BLOCKING_MARKER_CODES.has(markerCode) && isGuidanceCode(markerCode)) {
 		return { code: markerCode, message: CAPTURE_QUALITY_GUIDANCE_MESSAGES[markerCode] };
 	}
