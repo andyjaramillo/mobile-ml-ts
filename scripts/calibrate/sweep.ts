@@ -4,7 +4,7 @@
 // exists to diagnose, per the recorded-data note in the task). Every combination is
 // replayed through the real code (see replay.ts / evaluateCombo below) - this file only
 // aggregates the per-step results into fire-rate/flap-count summaries.
-import { DEFAULTS, MARKER_BOARD } from "../../src/CaptureQuality/captureQualityConfig";
+import { DEFAULTS, MARKER_ALIGNMENT, MARKER_BOARD } from "../../src/CaptureQuality/captureQualityConfig";
 import type { MarkerBoardThresholds } from "../../src/CaptureQuality/captureQualityConfig";
 import type { MarkerBoardCheckConfig } from "../../src/CaptureQuality/markerBoardCheck";
 import type { CaptureQualityIssueCode } from "../../src/CaptureQuality/types";
@@ -129,6 +129,7 @@ export function evaluateCombo(combo: SweepCombo, recordings: readonly ParsedCapt
 	const config: MarkerBoardCheckConfig = {
 		layout: MARKER_BOARD,
 		thresholds: combo.thresholds,
+		alignment: MARKER_ALIGNMENT,
 		liveWindowRecencyWeight: combo.alpha,
 		// The swept alpha is a per-tick weight at the reference rate; the sweep explores
 		// that weight, not the reference it is expressed against.

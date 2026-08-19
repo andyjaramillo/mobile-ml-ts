@@ -21,7 +21,7 @@ import { DEFAULTS as CAPTURE_QUALITY_DEFAULTS } from "../CaptureQuality/captureQ
 import { createCaptureRecorderState } from "../CaptureQualityHud/captureRecorder";
 import usePersonDetector from "../model/usePersonDetector";
 import { useCaptureQualitySession } from "./useCaptureQualitySession";
-import { TOTAL_TRIALS } from "./testGaitConfig";
+import { SUBJECT_CHECKS_ENABLED, TOTAL_TRIALS } from "./testGaitConfig";
 
 type Phase = "permission" | "camera" | "review" | "done";
 
@@ -66,7 +66,7 @@ function TestGait({ patientView = false }: TestGaitProps) {
 	// (see takeKey above), and reloading a ~4MB model from the CDN three times per session
 	// would cost the user real time for no benefit. A failure to load leaves the subject
 	// check silent and every other phase untouched.
-	const personDetector = usePersonDetector();
+	const personDetector = usePersonDetector(SUBJECT_CHECKS_ENABLED);
 	// Session-spanning by design: created once here (not inside TestGaitCamera), so it
 	// survives every remount above and a single Copy captures the whole run, even though
 	// the capture-quality windows feeding it get reset every take.

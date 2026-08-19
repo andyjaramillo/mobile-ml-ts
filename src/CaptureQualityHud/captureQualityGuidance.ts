@@ -25,7 +25,7 @@ import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
  */
 type GuidanceCode = Extract<
 	CaptureQualityIssueCode,
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "LOW_CONTRAST" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_DETECTED" | "SUBJECT_NOT_AT_START_LINE"
+	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "LOW_CONTRAST" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_DETECTED" | "SUBJECT_NOT_AT_START_LINE"
 >;
 
 /**
@@ -44,6 +44,7 @@ export const CAPTURE_QUALITY_GUIDANCE_MESSAGES: Record<GuidanceSelectionCode, st
 	MARKER_OBSTRUCTED: "Make sure nothing is covering the floor marker.",
 	MARKER_WRONG_ORIENTATION: "Turn the camera to face the floor marker directly.",
 	MARKER_SKEWED: "Straighten the camera angle toward the floor marker.",
+	MARKER_NOT_ALIGNED: "Move the camera so the floor marker sits inside the guide.",
 	MARKER_TOO_SMALL: "Move a little closer to the floor marker.",
 	MARKER_TOO_LARGE: "Step back a little so there's room for the whole walk path in view.",
 	LOW_LIGHT: "Add more light to the room.",
@@ -141,7 +142,7 @@ export function pickGuidanceMessage(
 		return { code: lightCode, message: CAPTURE_QUALITY_GUIDANCE_MESSAGES[lightCode] };
 	}
 
-	if (markerCode === "MARKER_TOO_SMALL" || markerCode === "MARKER_TOO_LARGE") {
+	if (markerCode === "MARKER_NOT_ALIGNED" || markerCode === "MARKER_TOO_SMALL" || markerCode === "MARKER_TOO_LARGE") {
 		return { code: markerCode, message: CAPTURE_QUALITY_GUIDANCE_MESSAGES[markerCode] };
 	}
 

@@ -33,11 +33,14 @@ import type {
 	CaptureQualitySeverity,
 } from "./types";
 import { DEFAULTS, MARKER_BOARD } from "./captureQualityConfig";
-import type { CaptureQualityConfig, MarkerBoardLayout, MarkerBoardThresholds } from "./captureQualityConfig";
+import { MARKER_ALIGNMENT } from "./captureQualityConfig";
+import type { CaptureQualityConfig, MarkerAlignmentTarget, MarkerBoardLayout, MarkerBoardThresholds } from "./captureQualityConfig";
 
 export interface MarkerBoardCheckConfig {
 	layout: MarkerBoardLayout;
 	thresholds: MarkerBoardThresholds;
+	/** Where the board is supposed to sit in frame - see MARKER_ALIGNMENT. */
+	alignment: MarkerAlignmentTarget;
 	/** Same field as CaptureQualityConfig.sampling.liveWindowRecencyWeight — the EWMA weight given to the newest frame, at ewmaReferenceTickHz. */
 	liveWindowRecencyWeight: number;
 	/** Same field as CaptureQualityConfig.sampling.ewmaReferenceTickHz - the rate at which liveWindowRecencyWeight is the effective alpha. */
@@ -49,6 +52,7 @@ export function defaultMarkerBoardCheckConfig(config: CaptureQualityConfig = DEF
 	return {
 		layout: MARKER_BOARD,
 		thresholds: config.markerBoard,
+		alignment: MARKER_ALIGNMENT,
 		liveWindowRecencyWeight: config.sampling.liveWindowRecencyWeight,
 		ewmaReferenceTickHz: config.sampling.ewmaReferenceTickHz,
 	};
@@ -94,6 +98,13 @@ export interface MarkerBoardFrameMetrics {
 	 * Null when there were no markers with usable corners at all.
 	 */
 	detectedMarkerAreaNorm: number | null;
+	/**
+	 * Centroid of every detected marker, as a fraction of frame width/height. Drives the
+	 * MARKER_NOT_ALIGNED check - every other marker metric is satisfied by a board sitting
+	 * anywhere in view, so without this a perfectly-sized board in the wrong corner reads as
+	 * good. Null when no marker had usable corners.
+	 */
+	boardCentroidNorm: { x: number; y: number } | null;
 }
 
 const EMPTY_METRICS: Omit<MarkerBoardFrameMetrics, "timestampMs" | "visibleCount" | "visibleIds"> = {
@@ -104,6 +115,7 @@ const EMPTY_METRICS: Omit<MarkerBoardFrameMetrics, "timestampMs" | "visibleCount
 	geometryOk: null,
 	orientationOk: null,
 	detectedMarkerAreaNorm: null,
+	boardCentroidNorm: null,
 };
 
 function buildMarkerIndex(markers: readonly CaptureQualityDetectedMarker[]): {
@@ -249,6 +261,19 @@ function computeOrientationAngleRad(
 	return Math.abs(Math.atan2(tailCenter.x - headCenter.x, tailCenter.y - headCenter.y));
 }
 
+function computeBoardCentroidNorm(
+	markers: readonly CaptureQualityDetectedMarker[],
+	frameWidth: number,
+	frameHeight: number
+): { x: number; y: number } | null {
+	if (!(frameWidth > 0) || !(frameHeight > 0)) return null;
+	const centers = markers.map(markerCenter).filter((c): c is CaptureQualityPoint => c !== null);
+	if (centers.length === 0) return null;
+	const sumX = centers.reduce((sum, c) => sum + c.x, 0);
+	const sumY = centers.reduce((sum, c) => sum + c.y, 0);
+	return { x: sumX / centers.length / frameWidth, y: sumY / centers.length / frameHeight };
+}
+
 /** Per-frame evaluation: raw geometry metrics for one sampled frame. Never throws; unavailable metrics are null. */
 export function evaluateMarkerBoardFrame(
 	frame: CaptureQualityFrameSample,
@@ -262,13 +287,24 @@ export function evaluateMarkerBoardFrame(
 	}
 
 	const { byId, hasDuplicates } = buildMarkerIndex(markers);
+	// Computed from whatever markers were seen, full set or not: the alignment check answers
+	// "is the camera pointed at the right place", which is worth knowing even on a frame where
+	// one marker dropped out.
+	const boardCentroidNorm = computeBoardCentroidNorm(markers, frame.frameWidth, frame.frameHeight);
 	// Computed regardless of full-set-ness (unlike normalizedArea below) so an
 	// incomplete frame still carries a usable "how big are the markers we DID see"
 	// signal - see MARKER_TOO_CLOSE in aggregateMarkerBoardMetrics.
 	const detectedMarkerAreaNorm = computeDetectedMarkerAreaNorm(byId, frame.frameWidth, frame.frameHeight);
 	const isFullSet = !hasDuplicates && config.layout.expectedMarkerIds.every((id) => byId.has(id));
 	if (!isFullSet) {
-		return { timestampMs: frame.timestampMs, visibleCount, visibleIds, ...EMPTY_METRICS, detectedMarkerAreaNorm };
+		return {
+			timestampMs: frame.timestampMs,
+			visibleCount,
+			visibleIds,
+			...EMPTY_METRICS,
+			detectedMarkerAreaNorm,
+			boardCentroidNorm,
+		};
 	}
 
 	const normalizedArea = computeNormalizedArea(byId, config.layout, frame.frameWidth, frame.frameHeight);
@@ -295,6 +331,7 @@ export function evaluateMarkerBoardFrame(
 		geometryOk,
 		orientationOk,
 		detectedMarkerAreaNorm,
+		boardCentroidNorm,
 	};
 }
 
@@ -372,6 +409,7 @@ export function evaluateMarkerPersistence(
  * which a pure per-window-snapshot function cannot do on its own.
  */
 export interface MarkerBoardHysteresisState {
+	alignmentBad: boolean;
 	orientationBad: boolean;
 	fullSetBad: boolean;
 	tooSmallBad: boolean;
@@ -379,10 +417,11 @@ export interface MarkerBoardHysteresisState {
 }
 
 export function createMarkerBoardHysteresisState(): MarkerBoardHysteresisState {
-	return { orientationBad: false, fullSetBad: false, tooSmallBad: false, tooLargeBad: false };
+	return { alignmentBad: false, orientationBad: false, fullSetBad: false, tooSmallBad: false, tooLargeBad: false };
 }
 
 export function resetMarkerBoardHysteresisState(state: MarkerBoardHysteresisState): void {
+	state.alignmentBad = false;
 	state.orientationBad = false;
 	state.fullSetBad = false;
 	state.tooSmallBad = false;
@@ -463,6 +502,10 @@ export interface MarkerBoardWindowAggregate {
 	weightedOrientationAngleRad: number | null;
 	/** EWMA of MarkerBoardFrameMetrics.detectedMarkerAreaNorm, updated on every frame with a computable value regardless of isFullSet - see that field's doc. */
 	weightedDetectedMarkerAreaNorm: number | null;
+	/** EWMA board centroid, as a fraction of frame width/height. Null when no frame in the window saw a marker. */
+	weightedBoardCentroidNorm: { x: number; y: number } | null;
+	/** Distance of weightedBoardCentroidNorm from the overlay's target, per axis, in the same normalized units. Null with no centroid. */
+	alignmentOffsetNorm: { x: number; y: number } | null;
 	/** Metrics for the newest frame in the window, for a responsive (non-averaged) readout. */
 	latest: MarkerBoardFrameMetrics | null;
 	/** Codes currently firing, in priority order. Empty means the board looks fine right now. */
@@ -502,6 +545,8 @@ export function aggregateMarkerBoardMetrics(
 			weightedDiagonalRatio: null,
 			weightedOrientationAngleRad: null,
 			weightedDetectedMarkerAreaNorm: null,
+			weightedBoardCentroidNorm: null,
+			alignmentOffsetNorm: null,
 			latest: null,
 			activeCodes: [],
 		};
@@ -512,6 +557,7 @@ export function aggregateMarkerBoardMetrics(
 	let diagonalRatio: number | null = null;
 	let orientationAngleRad: number | null = null;
 	let detectedMarkerAreaNorm: number | null = null;
+	let boardCentroidNorm: { x: number; y: number } | null = null;
 	let latest: MarkerBoardFrameMetrics | null = null;
 
 	// Each signal decays over the time since IT last advanced, not since the last frame in
@@ -524,6 +570,7 @@ export function aggregateMarkerBoardMetrics(
 	let diagonalRatioAtMs: number | null = null;
 	let orientationAtMs: number | null = null;
 	let detectedAreaAtMs: number | null = null;
+	let boardCentroidAtMs: number | null = null;
 
 	// One-entry memo on the gap: a steady loop (and every offline replay, whose gap is a
 	// constant reconstructed from the recording's mean fps) repeats the same delta on
@@ -554,6 +601,21 @@ export function aggregateMarkerBoardMetrics(
 			detectedMarkerAreaNorm =
 				detectedMarkerAreaNorm === null ? metrics.detectedMarkerAreaNorm : a * metrics.detectedMarkerAreaNorm + (1 - a) * detectedMarkerAreaNorm;
 			detectedAreaAtMs = nowMs;
+		}
+
+		// Truthiness, not `!== null`: a caller that predates this field (an older replay path,
+		// a hand-built metrics literal) supplies `undefined`, which a null-check would let
+		// through and then dereference. This module's contract is that it never throws.
+		if (metrics.boardCentroidNorm) {
+			const a = alphaSince(boardCentroidAtMs, nowMs);
+			boardCentroidNorm =
+				boardCentroidNorm === null
+					? metrics.boardCentroidNorm
+					: {
+							x: a * metrics.boardCentroidNorm.x + (1 - a) * boardCentroidNorm.x,
+							y: a * metrics.boardCentroidNorm.y + (1 - a) * boardCentroidNorm.y,
+						};
+			boardCentroidAtMs = nowMs;
 		}
 
 		if (metrics.isFullSet) {
@@ -616,6 +678,27 @@ export function aggregateMarkerBoardMetrics(
 	// itself is NOT hysteresis-controlled (out of this revision's scope) - only whether the
 	// gate that leads into that branch is open or closed.
 	const hasPersistentMiss = persistence.persistentMissingIds.length > 0;
+
+	// ALIGNMENT: is the board in the right PART of the frame. Every other marker signal is
+	// satisfied by a board that is anywhere in view, so without this a correctly-sized,
+	// correctly-oriented board sitting in the wrong corner reads as good. Evaluated per axis
+	// against the overlay's own target (see MARKER_ALIGNMENT) rather than as a single radius,
+	// because x is normalized by frame width and y by frame height - a shared radius would
+	// mean different physical distances on the two axes.
+	const alignmentOffsetNorm =
+		boardCentroidNorm === null
+			? null
+			: {
+					x: Math.abs(boardCentroidNorm.x - config.alignment.targetXNorm),
+					y: Math.abs(boardCentroidNorm.y - config.alignment.targetYNorm),
+				};
+	if (alignmentOffsetNorm !== null) {
+		const outsideWarn =
+			alignmentOffsetNorm.x > config.alignment.toleranceXNorm || alignmentOffsetNorm.y > config.alignment.toleranceYNorm;
+		const insideClear =
+			alignmentOffsetNorm.x <= config.alignment.clearXNorm && alignmentOffsetNorm.y <= config.alignment.clearYNorm;
+		hysteresis.alignmentBad = hysteresis.alignmentBad ? !insideClear : outsideWarn;
+	}
 
 	hysteresis.orientationBad = applyHysteresis(
 		hysteresis.orientationBad,
@@ -695,6 +778,13 @@ export function aggregateMarkerBoardMetrics(
 		) {
 			activeCodes.push("MARKER_SKEWED");
 		}
+		// Evaluated in the same branch as the size nudges, and for the same reason: "the board
+		// is in the wrong part of the frame" is only meaningful advice once the board is
+		// actually resolvable and correctly oriented. While it is not, the codes above already
+		// tell the user to fix something more fundamental.
+		if (hysteresis.alignmentBad) {
+			activeCodes.push("MARKER_NOT_ALIGNED");
+		}
 	}
 
 	return {
@@ -704,6 +794,8 @@ export function aggregateMarkerBoardMetrics(
 		weightedDiagonalRatio: diagonalRatio,
 		weightedOrientationAngleRad: orientationAngleRad,
 		weightedDetectedMarkerAreaNorm: detectedMarkerAreaNorm,
+		weightedBoardCentroidNorm: boardCentroidNorm,
+		alignmentOffsetNorm,
 		latest,
 		activeCodes,
 	};
@@ -738,7 +830,7 @@ export function evaluateMarkerBoardWindowAggregate(
 }
 
 const INDICATOR_BY_CODE: Record<
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "MARKER_SKEWED" | "MARKER_WRONG_ORIENTATION",
+	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "MARKER_SKEWED" | "MARKER_WRONG_ORIENTATION" | "MARKER_NOT_ALIGNED",
 	{ severity: CaptureQualitySeverity; state: CaptureQualityLiveIndicatorState }
 > = {
 	MARKER_INCOMPLETE: { severity: "critical", state: "critical" },
@@ -748,6 +840,7 @@ const INDICATOR_BY_CODE: Record<
 	MARKER_TOO_LARGE: { severity: "non-critical", state: "warning" },
 	MARKER_SKEWED: { severity: "non-critical", state: "warning" },
 	MARKER_WRONG_ORIENTATION: { severity: "non-critical", state: "warning" },
+	MARKER_NOT_ALIGNED: { severity: "non-critical", state: "warning" },
 };
 
 /** The CaptureQualityPreCheckFn-shaped entry point: last-N-frames + config in, issue results out. */

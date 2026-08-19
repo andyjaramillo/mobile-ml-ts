@@ -68,6 +68,59 @@ export const MARKER_BOARD: MarkerBoardLayout = {
 	forwardAxisMarkerIds: [6, 2],
 };
 
+/**
+ * WHERE the board is supposed to sit in frame, taken from the product's own alignment
+ * overlay rather than invented. Kept apart from MarkerBoardThresholds for the same reason
+ * MARKER_BOARD (layout) is: this describes the physical/visual setup, not a pass/fail number.
+ *
+ * MEASURED 2026-08-18 by decoding the overlay asset itself
+ * (gait-clinic-animated-overlay.apng, 270x480). Its static layer contains the marker board
+ * drawn on the floor at x 0.189-0.500, y 0.787-0.925, centroid (0.344, 0.856). The overlay
+ * renders at height:100%, width:auto, horizontally centred, and its aspect (0.5625) matches
+ * the capture aspect (1024x1820 = 0.5626) to within 0.02% - so overlay coordinates map onto
+ * frame coordinates directly, with no projection maths. That is a statement about the
+ * COORDINATE MAPPING only; it says nothing about how closely the operator has to match the
+ * guide, which is what the tolerances below are for. Re-derive these numbers if the overlay
+ * asset or the capture aspect ratio ever changes.
+ *
+ * INDEPENDENTLY CORROBORATED: across all seven subject recordings the operator's own board
+ * centroid measured x 0.310-0.387, y 0.822-0.874 - centred on the overlay target without
+ * anyone having measured it. Two independent sources agreeing is why these are treated as
+ * calibrated rather than spec-given.
+ */
+export interface MarkerAlignmentTarget {
+	/** Board centroid the overlay asks for, as a fraction of frame width. */
+	targetXNorm: number;
+	/** Board centroid the overlay asks for, as a fraction of frame height. */
+	targetYNorm: number;
+	/** Allowed horizontal deviation, as a fraction of frame WIDTH. */
+	toleranceXNorm: number;
+	/** Allowed vertical deviation, as a fraction of frame HEIGHT. */
+	toleranceYNorm: number;
+	/** Hysteresis clear levels - the board must come back inside THESE, not merely back inside the tolerance, before the nudge clears. */
+	clearXNorm: number;
+	clearYNorm: number;
+}
+
+export const MARKER_ALIGNMENT: MarkerAlignmentTarget = {
+	targetXNorm: 0.344,
+	targetYNorm: 0.856,
+	// DELIBERATELY LOOSE. The operator's own spread around the target, across seven recordings
+	// they considered well framed, is +/-0.043 in x and +/-0.034 in y; these tolerances sit at
+	// roughly 3.5x that. The board only has to be broadly where the guide shows it - this is a
+	// "the camera is pointed at the wrong part of the room" check, not a framing-precision one,
+	// and a nudge that fires on a setup the clinician considers fine is worse than one that
+	// occasionally lets a slightly-off setup through.
+	//
+	// A physically larger or smaller board is NOT this check's problem: it moves the board's
+	// apparent SIZE, which sizeWarnLowerNorm/sizeWarnUpperNorm own, and barely moves its
+	// centroid. Do not tighten these to compensate for a size issue.
+	toleranceXNorm: 0.15,
+	toleranceYNorm: 0.12,
+	clearXNorm: 0.13,
+	clearYNorm: 0.105,
+};
+
 export interface MarkerBoardThresholds {
 	/**
 	 * Four-boundary size model (2026-08-13 "viable range" revision, reintroducing

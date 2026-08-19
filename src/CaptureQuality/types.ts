@@ -29,6 +29,12 @@ export const CAPTURE_QUALITY_ISSUE_CODES = [
 	// with that real check rather than tightening this number further.
 	"MARKER_TOO_LARGE",
 	"MARKER_SKEWED",
+	// The board is fully visible, correctly sized and correctly oriented, but sitting in the
+	// wrong PART of the frame - the camera is pointed off to one side or too high/low. Distinct
+	// from every other marker code, all of which are satisfied by a board that is anywhere in
+	// view. The target is taken from the product's own alignment overlay - see
+	// captureQualityConfig.ts's MARKER_ALIGNMENT.
+	"MARKER_NOT_ALIGNED",
 	"MARKER_WRONG_ORIENTATION",
 	// Fires when a single marker (any of the nine - see markerBoardCheck.ts's
 	// persistence tracker) has been continuously absent past the "structural" time
