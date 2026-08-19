@@ -27,6 +27,16 @@ export const RUN_CAPTURE_QUALITY_CHECKS_WHILE_RECORDING = false;
 
 export const HUD_UPDATE_EVERY_N_FRAMES = 3; // same throttle RealTimeProcessor.tsx uses
 
+// Set false to test the board and lighting checks without a person in frame. Subject codes
+// outrank the board nudges in the banner, so with nobody there the permanent "make sure the
+// patient is standing in view" masks MARKER_NOT_ALIGNED and the board checks cannot be
+// exercised solo. MUST BE true WHEN SHIPPED.
+//
+// Implemented by not loading the model rather than by branching the check, so that flipping it
+// routes through the same fail-open path a real model failure takes - testing with it off also
+// exercises what a clinician gets when the model cannot load.
+export const SUBJECT_CHECKS_ENABLED = true;
+
 // Both mirror RealTimeProcessor.tsx - see the constants there for the reasoning.
 export const DETECTOR_INPUT_MAX_W = 1024;
 export const DETECT_TICK_INTERVAL_MS = 1000 / CAPTURE_QUALITY_DEFAULTS.sampling.liveTickHz;

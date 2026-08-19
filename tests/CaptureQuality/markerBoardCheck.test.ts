@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { DEFAULTS } from "../../src/CaptureQuality/captureQualityConfig";
+import { DEFAULTS, MARKER_ALIGNMENT } from "../../src/CaptureQuality/captureQualityConfig";
 import type { CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "../../src/CaptureQuality/types";
 import {
 	aggregateMarkerBoardMetrics,
@@ -77,9 +77,13 @@ function squareMarker(id: number, cx: number, cy: number, size: number): Capture
 // non-firing in captureQualityConfig.ts - it's confounded by distance/rotation/aspect
 // ratio, see that file), so this fixture no longer needs foreshortening to dodge it;
 // kept for realism only.
-function fullSetMarkers(size: number): CaptureQualityDetectedMarker[] {
-	const cx = FRAME_WIDTH / 2;
-	const cy = FRAME_HEIGHT / 2;
+// Centred on the alignment target the overlay asks for (MARKER_ALIGNMENT), not on the frame
+// centre: MARKER_NOT_ALIGNED now fires on a board sitting in the wrong part of the frame, and
+// a fixture at the frame centre is roughly a third of the frame height above where the
+// overlay puts the board. Tests that specifically exercise misalignment override this.
+function fullSetMarkers(size: number, targetX = MARKER_ALIGNMENT.targetXNorm, targetY = MARKER_ALIGNMENT.targetYNorm): CaptureQualityDetectedMarker[] {
+	const cx = FRAME_WIDTH * targetX;
+	const cy = FRAME_HEIGHT * targetY;
 	const vh = 90;
 	const hh = 250;
 	return [
@@ -182,6 +186,7 @@ describe("evaluateMarkerBoardFrame", () => {
 			geometryOk: null,
 			orientationOk: null,
 			detectedMarkerAreaNorm: null,
+			boardCentroidNorm: null,
 		});
 	});
 
@@ -367,6 +372,8 @@ describe("evaluateMarkerBoardWindowAggregate recency weighting", () => {
 			weightedDiagonalRatio: null,
 			weightedOrientationAngleRad: null,
 			weightedDetectedMarkerAreaNorm: null,
+			weightedBoardCentroidNorm: null,
+			alignmentOffsetNorm: null,
 			latest: null,
 			activeCodes: [],
 		});
@@ -416,6 +423,7 @@ describe("MarkerBoardHysteresisState / hysteresis in aggregateMarkerBoardMetrics
 
 	it("creates a fresh state with nothing bad", () => {
 		expect(createMarkerBoardHysteresisState()).toEqual({
+			alignmentBad: false,
 			orientationBad: false,
 			fullSetBad: false,
 			tooSmallBad: false,
@@ -423,14 +431,15 @@ describe("MarkerBoardHysteresisState / hysteresis in aggregateMarkerBoardMetrics
 		});
 	});
 
-	it("resets all four flags back to false", () => {
+	it("resets all five flags back to false", () => {
 		const state = createMarkerBoardHysteresisState();
+		state.alignmentBad = true;
 		state.orientationBad = true;
 		state.fullSetBad = true;
 		state.tooSmallBad = true;
 		state.tooLargeBad = true;
 		resetMarkerBoardHysteresisState(state);
-		expect(state).toEqual({ orientationBad: false, fullSetBad: false, tooSmallBad: false, tooLargeBad: false });
+		expect(state).toEqual({ alignmentBad: false, orientationBad: false, fullSetBad: false, tooSmallBad: false, tooLargeBad: false });
 	});
 
 	// Direct test of the MARKER_TOO_SMALL boundary's hysteresis (sizeWarnLowerNorm=0.0014,
@@ -969,5 +978,72 @@ describe("resolveEwmaAlpha - rate-invariant smoothing", () => {
 		for (const bad of [NaN, 0, -5, Infinity]) {
 			expect(resolveEwmaAlpha(bad, REF_HZ, REF_ALPHA)).toBe(REF_ALPHA);
 		}
+	});
+});
+
+describe("MARKER_NOT_ALIGNED - board is visible and well formed but in the wrong part of frame", () => {
+	function alignedFrames(targetX: number, targetY: number, count = 20) {
+		return Array.from({ length: count }, (_, i) => ({
+			imageData: null,
+			timestampMs: i * 125,
+			frameWidth: FRAME_WIDTH,
+			frameHeight: FRAME_HEIGHT,
+			people: null,
+			markers: fullSetMarkers(GOOD_SIZE, targetX, targetY),
+		}));
+	}
+
+	it("is silent for a board sitting on the overlay's target", () => {
+		const aggregate = evaluateMarkerBoardWindowAggregate(
+			alignedFrames(MARKER_ALIGNMENT.targetXNorm, MARKER_ALIGNMENT.targetYNorm),
+			defaultMarkerBoardCheckConfig(DEFAULTS)
+		);
+		expect(aggregate.activeCodes).not.toContain("MARKER_NOT_ALIGNED");
+	});
+
+	it("stays silent across the whole spread the operator actually produced", () => {
+		// Measured board centroids across all seven subject recordings: x 0.310-0.387,
+		// y 0.822-0.874. Every one of those framings was considered fine, so none may warn.
+		for (const [x, y] of [
+			[0.310, 0.822],
+			[0.387, 0.874],
+			[0.310, 0.874],
+			[0.387, 0.822],
+		]) {
+			const aggregate = evaluateMarkerBoardWindowAggregate(alignedFrames(x, y), defaultMarkerBoardCheckConfig(DEFAULTS));
+			expect(aggregate.activeCodes, `centroid ${x},${y}`).not.toContain("MARKER_NOT_ALIGNED");
+		}
+	});
+
+	it("fires when the board sits well off to one side", () => {
+		const aggregate = evaluateMarkerBoardWindowAggregate(
+			alignedFrames(MARKER_ALIGNMENT.targetXNorm + 0.25, MARKER_ALIGNMENT.targetYNorm),
+			defaultMarkerBoardCheckConfig(DEFAULTS)
+		);
+		expect(aggregate.activeCodes).toContain("MARKER_NOT_ALIGNED");
+	});
+
+	it("fires when the board sits well too high in frame", () => {
+		const aggregate = evaluateMarkerBoardWindowAggregate(
+			alignedFrames(MARKER_ALIGNMENT.targetXNorm, MARKER_ALIGNMENT.targetYNorm - 0.25),
+			defaultMarkerBoardCheckConfig(DEFAULTS)
+		);
+		expect(aggregate.activeCodes).toContain("MARKER_NOT_ALIGNED");
+	});
+
+	it("never displaces a more fundamental board problem", () => {
+		// A misaligned AND incomplete board must say "make the whole board visible" first -
+		// where it sits is not actionable while the camera cannot resolve it.
+		const frames = Array.from({ length: 20 }, (_, i) => ({
+			imageData: null,
+			timestampMs: i * 125,
+			frameWidth: FRAME_WIDTH,
+			frameHeight: FRAME_HEIGHT,
+			people: null,
+			markers: fullSetMarkers(GOOD_SIZE, 0.9, 0.2).slice(0, 4),
+		}));
+		const aggregate = evaluateMarkerBoardWindowAggregate(frames, defaultMarkerBoardCheckConfig(DEFAULTS));
+		expect(aggregate.activeCodes[0]).toBe("MARKER_INCOMPLETE");
+		expect(aggregate.activeCodes).not.toContain("MARKER_NOT_ALIGNED");
 	});
 });

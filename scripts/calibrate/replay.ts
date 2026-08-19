@@ -55,6 +55,10 @@ export function sampleToMetrics(
 		orientationAngleRad: isFullSet ? decode(sample.rot, scaleExponents[2]) : null,
 		geometryOk: null,
 		orientationOk: null,
+		// CQ1/CQ2/CQ3 recordings carry no board centroid - the field postdates them - so
+		// alignment simply cannot be replayed from those formats. Null means "not measured",
+		// and aggregateMarkerBoardMetrics skips it rather than treating it as misaligned.
+		boardCentroidNorm: null,
 		detectedMarkerAreaNorm: decode(sample.detArea, scaleExponents[0]),
 	};
 }
