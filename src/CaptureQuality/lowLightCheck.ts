@@ -459,15 +459,35 @@ export function evaluateLowLightWindowAggregate(
 ): LowLightWindowAggregate {
 	if (frames.length === 0) return EMPTY_AGGREGATE;
 
+	// The two halves of this check do not survive an undetected ROI equally. LUMA keeps
+	// every path, as the module header requires: a room too dark to detect a marker is the
+	// case LOW_LIGHT exists for. CONTRAST does not - on the fallback paths the grid sits
+	// where the board is not (the default rect lands on floor and wall), and blank wall is
+	// flat by nature, so it reports glare on a board the check is not looking at. Nulled
+	// rather than zeroed, this module's "did not run", so the EWMA below skips it.
 	const metricsSequence: LowLightFrameMetrics[] = [];
 	let latestRoi: LightingRoiRect = config.roi.defaultRoi;
 	let latestRoiSource: LowLightRoiSource = "default";
+	let anyDetectedRoi = false;
 	for (let i = 0; i < frames.length; i++) {
 		const resolved = resolveLowLightRoi(frames.slice(0, i + 1), config);
-		metricsSequence.push(evaluateLowLightFrame(frames[i], config, resolved.roi));
+		const metrics = evaluateLowLightFrame(frames[i], config, resolved.roi);
+		if (resolved.source === "detected") {
+			anyDetectedRoi = true;
+			metricsSequence.push(metrics);
+		} else {
+			metricsSequence.push({ ...metrics, meanContrastStd: null, flatCellFraction: null });
+		}
 		latestRoi = resolved.roi;
 		latestRoiSource = resolved.source;
 	}
+
+	// Not one frame in the whole window found the board, so no contrast reading in the
+	// window is about the board. Same sustained-absence case as markerBoardCheck's
+	// orientation gate and the same answer: unmeasurable is not bad, so drop the verdict
+	// instead of letting applyHysteresis's null-hold carry it indefinitely. The missing
+	// board is already MARKER_INCOMPLETE's to report.
+	if (!anyDetectedRoi && hysteresis) hysteresis.lowContrastBad = false;
 
 	const aggregate = aggregateLowLightMetrics(metricsSequence, config, hysteresis);
 	return { ...aggregate, latestRoi, latestRoiSource };

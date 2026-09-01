@@ -171,6 +171,34 @@ describe("ROI scoping - the false-positive fix", () => {
 		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results).toEqual([]);
 	});
+
+	it("does not report LOW_CONTRAST off a fallback ROI - a blank room says nothing about the board", () => {
+		// No markers anywhere, so the ROI falls to the default rect, which lands on floor and
+		// wall. Bright and perfectly flat: the reading is real, it is just not about the board.
+		const blankRoom = frameFor(makeImageData(WIDTH, HEIGHT, () => 200), null);
+		const aggregate = evaluateLowLightWindowAggregate([blankRoom, blankRoom, blankRoom], config);
+		expect(aggregate.latestRoiSource).toBe("default");
+		expect(aggregate.activeCodes).not.toContain("LOW_CONTRAST");
+	});
+
+	it("releases a LOW_CONTRAST verdict once no frame in the window still finds the board", () => {
+		const state = createLowLightHysteresisState();
+		const washedBoard = frameFor(
+			boardVsBackgroundImage(
+				() => 220,
+				(x, y) => textured(120, 40, x, y)
+			),
+			[markerAt(0, BOARD_RECT)]
+		);
+		expect(evaluateLowLightWindowAggregate([washedBoard], config, state).activeCodes).toContain("LOW_CONTRAST");
+
+		// Board gone: applyHysteresis's null-hold would otherwise carry that verdict forever,
+		// since only a detected-ROI frame can lower it again.
+		const blankRoom = frameFor(makeImageData(WIDTH, HEIGHT, () => 200), null);
+		const after = evaluateLowLightWindowAggregate([blankRoom, blankRoom], config, state);
+		expect(state.lowContrastBad).toBe(false);
+		expect(after.activeCodes).not.toContain("LOW_CONTRAST");
+	});
 });
 
 describe("resolveLowLightRoi - the three selection paths", () => {
