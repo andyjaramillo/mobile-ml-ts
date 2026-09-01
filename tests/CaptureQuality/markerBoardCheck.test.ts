@@ -567,6 +567,29 @@ describe("MarkerBoardHysteresisState / hysteresis in aggregateMarkerBoardMetrics
 		expect(fullRecovery.activeCodes).toEqual([]);
 		expect(state.orientationBad).toBe(false);
 	});
+
+	it("releases a stuck orientation verdict once no full-set frame is left in the window", () => {
+		// The board washes out or gets covered: no full-set frames, so no angle can be
+		// measured. Holding the previous verdict would latch WRONG_ORIENTATION forever and
+		// suppress the visibility codes that describe what is actually wrong.
+		const state = createMarkerBoardHysteresisState();
+		const rotated = aggregateMarkerBoardMetrics(
+			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: config.thresholds.orientationMarginRad + 0.05 }],
+			config,
+			undefined,
+			state
+		);
+		expect(rotated.activeCodes).toEqual(["MARKER_WRONG_ORIENTATION"]);
+
+		const unmeasurable = aggregateMarkerBoardMetrics(
+			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), isFullSet: false, orientationAngleRad: null, normalizedArea: null, diagonalRatio: null }],
+			config,
+			undefined,
+			state
+		);
+		expect(state.orientationBad).toBe(false);
+		expect(unmeasurable.activeCodes).not.toContain("MARKER_WRONG_ORIENTATION");
+	});
 });
 
 describe("MarkerPersistenceTracker", () => {

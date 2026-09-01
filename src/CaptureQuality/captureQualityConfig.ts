@@ -365,6 +365,14 @@ export interface LightingThresholds {
 	/** Hysteresis clear level for LOW_LIGHT: once triggered, the fraction must drop to/below THIS, not just back under darkCellFractionThreshold, before the warning clears. UNCALIBRATED - no ROI-scoped recording exists yet to measure a real noise band, so the gap is a placeholder. */
 	darkCellFractionClearThreshold: number;
 	/** Per-cell luma standard deviation (0-255) at/below which a cell counts as flat/washed-out. UNCALIBRATED. */
+	/** Per-cell mean luma at or above which a cell counts as blown out, for GLARE. Mirror of cellDarkLumaMax. */
+	cellBrightLumaMin: number;
+	/** Recency-weighted bright-cell fraction that raises GLARE. */
+	brightCellFractionThreshold: number;
+	/** Hysteresis clear level for brightCellFractionThreshold. */
+	brightCellFractionClearThreshold: number;
+	/** Upper bound on the same fraction: above this the WHOLE roi is bright, which is a bright room (or a bright board), not a glare patch on one part of the board. */
+	brightCellFractionPatchMax: number;
 	cellFlatContrastMax: number;
 	/** Recency-weighted fraction of ROI grid cells reading flat before LOW_CONTRAST fires. UNCALIBRATED. */
 	flatCellFractionThreshold: number;
@@ -619,6 +627,24 @@ export const DEFAULTS: CaptureQualityConfig = {
 		cellDarkLumaMax: 40,
 		darkCellFractionThreshold: 0.2,
 		darkCellFractionClearThreshold: 0.15,
+		// CALIBRATED 2026-09-01 against the two ROI-scoped recordings, which separate
+		// completely on cell luma and not at all on contrast: the glare take (marker 8 lost
+		// in 31/31 frames, marker 7 in 14/31) reads p75 luma 144-147 and max 166-171, the
+		// clean take 81-86 and 120-126. 130 puts the boundary in that gap, giving the glare
+		// take ~5 of 16 cells bright and the clean take none - so the 0.2/0.15 pair trips at
+		// 4 bright cells and releases at 2, with the clean setup nowhere near either. Note
+		// the ROI is padded 25% past the board (see computeDetectedRoi), so a lamp or window
+		// just outside the board can also raise this; the remedy it prints is the same one.
+		// n=2 recordings from ONE setup: revisit before treating 130 as general.
+		cellBrightLumaMin: 130,
+		brightCellFractionThreshold: 0.2,
+		brightCellFractionClearThreshold: 0.15,
+		// GLARE is a PATCH, and this bound is what makes it one: without it a uniformly
+		// bright board reads as 16/16 bright cells and warns about glare that is really just
+		// a well-lit room. The glare recording sits at 0.32-0.33 - five of sixteen cells,
+		// with the rest at 45-90 luma - so 0.75 excludes the whole-ROI case by a wide margin
+		// without touching it.
+		brightCellFractionPatchMax: 0.75,
 		cellFlatContrastMax: 10,
 		flatCellFractionThreshold: 0.2,
 		flatCellFractionClearThreshold: 0.15,
