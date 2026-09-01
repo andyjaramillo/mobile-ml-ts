@@ -700,13 +700,24 @@ export function aggregateMarkerBoardMetrics(
 		hysteresis.alignmentBad = hysteresis.alignmentBad ? !insideClear : outsideWarn;
 	}
 
-	hysteresis.orientationBad = applyHysteresis(
-		hysteresis.orientationBad,
-		orientationAngleRad,
-		config.thresholds.orientationMarginRad,
-		config.thresholds.orientationClearMarginRad,
-		"above"
-	);
+	// A null angle here means NO frame in the whole recency window was a full set - the EWMA
+	// is recomputed from the window on every call, so a single dropped frame cannot produce
+	// it. applyHysteresis's null-hold is right for that single-frame case and wrong for this
+	// one: holding a verdict whose evidence has entirely left the window latches it forever,
+	// because only a full-set frame can ever lower it again. A washed-out or covered board
+	// produces exactly that, and since orientationBad suppresses every other code below, the
+	// user is told to straighten a board the camera can no longer even see. Unmeasurable is
+	// not bad - drop the assertion and let the visibility codes report the real problem.
+	hysteresis.orientationBad =
+		orientationAngleRad === null
+			? false
+			: applyHysteresis(
+					hysteresis.orientationBad,
+					orientationAngleRad,
+					config.thresholds.orientationMarginRad,
+					config.thresholds.orientationClearMarginRad,
+					"above"
+				);
 	hysteresis.fullSetBad = applyHysteresis(
 		hysteresis.fullSetBad,
 		weightedFullSetScore,
