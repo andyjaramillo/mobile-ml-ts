@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { DEFAULTS } from "../../src/CaptureQuality/captureQualityConfig";
+import { DEFAULTS, LIGHTING_GRID } from "../../src/CaptureQuality/captureQualityConfig";
 import type { LightingRoiRect } from "../../src/CaptureQuality/captureQualityConfig";
 import type { CaptureQualityDetectedMarker, CaptureQualityFrameSample } from "../../src/CaptureQuality/types";
 import {
@@ -19,6 +19,7 @@ import {
 } from "../../src/CaptureQuality/lowLightCheck";
 import type { LowLightFrameMetrics } from "../../src/CaptureQuality/lowLightCheck";
 import { parseCompactExportFile } from "../../scripts/calibrate/parse";
+import { lightingSampleToMetrics } from "../../scripts/calibrate/lightingReplay";
 import { defaultMarkerBoardCheckConfig } from "../../src/CaptureQuality/markerBoardCheck";
 import { replayRecording } from "../../scripts/calibrate/replay";
 
@@ -178,12 +179,12 @@ describe("ROI scoping - the false-positive fix", () => {
 	});
 
 	it("reports GLARE for a blown-out patch on part of the board", () => {
-		// A bright patch over one side of the board, the rest at an ordinary level - the
-		// shape of the 2026-09-01 glare recording, where five of sixteen cells read bright
-		// and the markers under them stopped resolving.
+		// Bright patch over one side, ordinary level elsewhere - the shape of the 2026-09-01
+		// glare recording (five of sixteen cells bright, spread 120-126, markers under the
+		// patch not resolving). Both halves of the signal have to be present.
 		const image = boardVsBackgroundImage(
-			(x, y) => (x > (BOARD_RECT.xNorm + BOARD_RECT.widthNorm / 2) * WIDTH ? 200 : textured(90, 25, x, y)),
-			(x, y) => textured(90, 25, x, y)
+			(x, y) => (x > (BOARD_RECT.xNorm + BOARD_RECT.widthNorm / 2) * WIDTH ? 225 : textured(85, 20, x, y)),
+			(x, y) => textured(85, 20, x, y)
 		);
 		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results.map((r) => r.code)).toContain("GLARE");
@@ -193,6 +194,17 @@ describe("ROI scoping - the false-positive fix", () => {
 		const image = boardVsBackgroundImage(
 			(x, y) => textured(210, 25, x, y),
 			(x, y) => textured(210, 25, x, y)
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
+		expect(results.map((r) => r.code)).not.toContain("GLARE");
+	});
+
+	it("does NOT report GLARE for a bright but EVEN roi - the false positive the first pass shipped", () => {
+		// Modeled on false-glare-a: plenty of bright cells (0.39-0.47 of them) but a spread of
+		// only 80-89, and every one of the nine markers resolving on every frame.
+		const image = boardVsBackgroundImage(
+			(x, y) => textured(150, 20, x, y),
+			(x, y) => textured(140, 20, x, y)
 		);
 		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results.map((r) => r.code)).not.toContain("GLARE");
@@ -374,6 +386,7 @@ describe("aggregateLowLightMetrics", () => {
 			weightedMeanLuma: null,
 			weightedDarkCellFraction: null,
 			weightedBrightCellFraction: null,
+			weightedLumaSpread: null,
 			weightedMeanContrastStd: null,
 			weightedFlatCellFraction: null,
 			latest: null,
@@ -411,6 +424,52 @@ describe("CQ1 export lines still parse under the extended (CQ1/CQ2/CQ3) parser",
 		expect(recording.lightingScope).toBe("none");
 		expect(recording.samples.every((s) => s.detArea === null)).toBe(true);
 	});
+});
+
+describe("GLARE across every ROI-scoped recording - exactly one of them is glare", () => {
+	// The first pass at GLARE was fitted to two recordings and false-fired on the phone;
+	// this pins it against all of them, so a threshold move has to answer for every setup
+	// on file rather than the two it was tuned on. GLARE_FILE is the only recording where
+	// the board actually failed to resolve (marker 8 absent in 31/31 frames).
+	const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+	const GLARE_FILE = "2026-09-01-gait-roi-glare.cq4.txt";
+	const ROI_RECORDINGS = [
+		"2026-08-13-gait-1024-viable-range-sweep.cq3.txt",
+		"2026-08-13-gait-768-viable-range-sweep.cq3.txt",
+		"2026-08-13-gait-ideal-1024-throttled.cq3.txt",
+		"2026-08-17-gait-subject-absent.cq4.txt",
+		"2026-08-17-gait-subject-at-start-fidget.cq4.txt",
+		"2026-08-17-gait-subject-at-start-still.cq4.txt",
+		"2026-08-17-gait-subject-too-far-back.cq4.txt",
+		"2026-08-17-gait-subject-two-people.cq4.txt",
+		"2026-08-17-gait-subject-walking-away.cq4.txt",
+		"2026-08-18-gait-subject-far-back-lateral.cq4.txt",
+		"2026-09-01-gait-roi-contrast-false-warn.cq4.txt",
+		"2026-09-01-gait-roi-false-glare-a.cq4.txt",
+		"2026-09-01-gait-roi-false-glare-b.cq4.txt",
+		GLARE_FILE,
+	];
+
+	function glareFiredIn(file: string): boolean {
+		const path = join(REPO_ROOT, "calibration", file);
+		const [recording] = parseCompactExportFile(path, readFileSync(path, "utf8"));
+		expect(recording.lightingScope).toBe("roi");
+		const grid = recording.lightingGrid ?? LIGHTING_GRID;
+		const metrics = recording.lightingSamples.map((sample, i) =>
+			lightingSampleToMetrics(sample, grid, DEFAULTS.lighting, i * 250)
+		);
+		const hysteresis = createLowLightHysteresisState();
+		return metrics.some((_, i) =>
+			aggregateLowLightMetrics(metrics.slice(0, i + 1), config, hysteresis).activeCodes.includes("GLARE")
+		);
+	}
+
+	for (const file of ROI_RECORDINGS) {
+		const shouldFire = file === GLARE_FILE;
+		it(`${shouldFire ? "reports" : "stays silent on"} ${file}`, () => {
+			expect(glareFiredIn(file)).toBe(shouldFire);
+		});
+	}
 });
 
 describe("the six committed CQ2 recordings - lighting data is historical (whole-frame), marker classifications are unaffected by the ROI change", () => {

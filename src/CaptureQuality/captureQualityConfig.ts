@@ -373,6 +373,8 @@ export interface LightingThresholds {
 	brightCellFractionClearThreshold: number;
 	/** Upper bound on the same fraction: above this the WHOLE roi is bright, which is a bright room (or a bright board), not a glare patch on one part of the board. */
 	brightCellFractionPatchMax: number;
+	/** Minimum spread (brightest cell mean minus darkest) required alongside the bright fraction before GLARE fires. Brightness alone does not separate glare from a bright room - see DEFAULTS.lighting. */
+	cellLumaSpreadMin: number;
 	cellFlatContrastMax: number;
 	/** Recency-weighted fraction of ROI grid cells reading flat before LOW_CONTRAST fires. UNCALIBRATED. */
 	flatCellFractionThreshold: number;
@@ -627,24 +629,27 @@ export const DEFAULTS: CaptureQualityConfig = {
 		cellDarkLumaMax: 40,
 		darkCellFractionThreshold: 0.2,
 		darkCellFractionClearThreshold: 0.15,
-		// CALIBRATED 2026-09-01 against the two ROI-scoped recordings, which separate
-		// completely on cell luma and not at all on contrast: the glare take (marker 8 lost
-		// in 31/31 frames, marker 7 in 14/31) reads p75 luma 144-147 and max 166-171, the
-		// clean take 81-86 and 120-126. 130 puts the boundary in that gap, giving the glare
-		// take ~5 of 16 cells bright and the clean take none - so the 0.2/0.15 pair trips at
-		// 4 bright cells and releases at 2, with the clean setup nowhere near either. Note
-		// the ROI is padded 25% past the board (see computeDetectedRoi), so a lamp or window
-		// just outside the board can also raise this; the remedy it prints is the same one.
-		// n=2 recordings from ONE setup: revisit before treating 130 as general.
+		// RECALIBRATED 2026-09-01 against all 11 ROI-scoped recordings, after a first pass
+		// fitted to only two of them shipped and produced false glare warnings on the phone.
+		// The correction that matters: BRIGHTNESS ALONE DOES NOT SEPARATE GLARE. Ordinary
+		// bright setups reach a higher bright-cell fraction than the glare take does -
+		// subject-too-far-back runs 0.50-0.69 and subject-two-people 0.52-0.72 against the
+		// glare take's 0.31-0.33 - because a brighter room lifts every cell at once. What
+		// separates them is UNEVENNESS: the glare take reads spread (brightest cell mean
+		// minus darkest) 120-126, while all ten non-glare recordings sit at 43-95, the
+		// highest being far-back-lateral's 95. 110 sits in that gap, nearer the false side
+		// on purpose - a false GLARE outranks the board codes (see captureQualityGuidance)
+		// and so costs more than a missed one. Both conditions are required: a blown-out
+		// patch AND an uneven ROI.
 		cellBrightLumaMin: 130,
 		brightCellFractionThreshold: 0.2,
 		brightCellFractionClearThreshold: 0.15,
-		// GLARE is a PATCH, and this bound is what makes it one: without it a uniformly
-		// bright board reads as 16/16 bright cells and warns about glare that is really just
-		// a well-lit room. The glare recording sits at 0.32-0.33 - five of sixteen cells,
-		// with the rest at 45-90 luma - so 0.75 excludes the whole-ROI case by a wide margin
-		// without touching it.
+		// GLARE is a PATCH, and these two bounds are what make it one. The fraction cap
+		// excludes the whole-ROI case (a uniformly bright board is a well-lit room); the
+		// spread floor excludes the evenly-bright ones below it, which is the condition the
+		// shipped first pass was missing. See cellBrightLumaMin above for the measurements.
 		brightCellFractionPatchMax: 0.75,
+		cellLumaSpreadMin: 110,
 		cellFlatContrastMax: 10,
 		flatCellFractionThreshold: 0.2,
 		flatCellFractionClearThreshold: 0.15,

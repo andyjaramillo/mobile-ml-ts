@@ -158,6 +158,8 @@ export interface LowLightFrameMetrics {
 	meanContrastStd: number | null;
 	/** Fraction of computable cells at/above thresholds.cellBrightLumaMin - the GLARE signal, mirror of darkCellFraction. Null if computableCellCount is 0, or if this frame's ROI was not the detected board (see evaluateLowLightWindowAggregate). */
 	brightCellFraction: number | null;
+	/** Brightest computable cell mean minus the darkest - how UNEVEN the roi is, the other half of GLARE. Null under the same conditions as brightCellFraction. */
+	lumaSpread: number | null;
 	/** Fraction of computable cells at/below thresholds.cellFlatContrastMax. Null if computableCellCount is 0. */
 	flatCellFraction: number | null;
 	/**
@@ -178,6 +180,7 @@ const EMPTY_METRICS: LowLightFrameMetrics = {
 	meanLuma: null,
 	darkCellFraction: null,
 	brightCellFraction: null,
+	lumaSpread: null,
 	meanContrastStd: null,
 	flatCellFraction: null,
 	cellMeans: [],
@@ -227,6 +230,8 @@ export function evaluateLowLightFrame(
 
 	let darkCells = 0;
 	let brightCells = 0;
+	let minCellMean = Infinity;
+	let maxCellMean = -Infinity;
 	let flatCells = 0;
 	let computableCellCount = 0;
 	let lumaSum = 0;
@@ -266,6 +271,8 @@ export function evaluateLowLightFrame(
 			computableCellCount++;
 			lumaSum += mean;
 			contrastSum += std;
+			if (mean < minCellMean) minCellMean = mean;
+			if (mean > maxCellMean) maxCellMean = mean;
 			if (mean <= config.thresholds.cellDarkLumaMax) darkCells++;
 			if (mean >= config.thresholds.cellBrightLumaMin) brightCells++;
 			if (std <= config.thresholds.cellFlatContrastMax) flatCells++;
@@ -283,6 +290,7 @@ export function evaluateLowLightFrame(
 		meanLuma: lumaSum / computableCellCount,
 		darkCellFraction: darkCells / computableCellCount,
 		brightCellFraction: brightCells / computableCellCount,
+		lumaSpread: maxCellMean - minCellMean,
 		meanContrastStd: contrastSum / computableCellCount,
 		flatCellFraction: flatCells / computableCellCount,
 		cellMeans,
@@ -350,6 +358,7 @@ export interface LowLightWindowAggregate {
 	weightedMeanLuma: number | null;
 	weightedDarkCellFraction: number | null;
 	weightedBrightCellFraction: number | null;
+	weightedLumaSpread: number | null;
 	weightedMeanContrastStd: number | null;
 	weightedFlatCellFraction: number | null;
 	/** Metrics for the newest frame in the window, for a responsive (non-averaged) readout. */
@@ -367,6 +376,7 @@ const EMPTY_AGGREGATE: LowLightWindowAggregate = {
 	weightedMeanLuma: null,
 	weightedDarkCellFraction: null,
 	weightedBrightCellFraction: null,
+	weightedLumaSpread: null,
 	weightedMeanContrastStd: null,
 	weightedFlatCellFraction: null,
 	latest: null,
@@ -393,6 +403,7 @@ export function aggregateLowLightMetrics(
 	let meanLuma: number | null = null;
 	let darkCellFraction: number | null = null;
 	let brightCellFraction: number | null = null;
+	let lumaSpread: number | null = null;
 	let meanContrastStd: number | null = null;
 	let flatCellFraction: number | null = null;
 	let latest: LowLightFrameMetrics | null = null;
@@ -403,6 +414,7 @@ export function aggregateLowLightMetrics(
 	let meanLumaAtMs: number | null = null;
 	let darkAtMs: number | null = null;
 	let brightAtMs: number | null = null;
+	let spreadAtMs: number | null = null;
 	let contrastAtMs: number | null = null;
 	let flatAtMs: number | null = null;
 
@@ -426,6 +438,8 @@ export function aggregateLowLightMetrics(
 		if (metrics.darkCellFraction !== null) darkAtMs = nowMs;
 		brightCellFraction = blend(brightCellFraction, metrics.brightCellFraction, brightAtMs, nowMs);
 		if (metrics.brightCellFraction !== null) brightAtMs = nowMs;
+		lumaSpread = blend(lumaSpread, metrics.lumaSpread, spreadAtMs, nowMs);
+		if (metrics.lumaSpread !== null) spreadAtMs = nowMs;
 		meanContrastStd = blend(meanContrastStd, metrics.meanContrastStd, contrastAtMs, nowMs);
 		if (metrics.meanContrastStd !== null) contrastAtMs = nowMs;
 		flatCellFraction = blend(flatCellFraction, metrics.flatCellFraction, flatAtMs, nowMs);
@@ -440,18 +454,24 @@ export function aggregateLowLightMetrics(
 		config.thresholds.darkCellFractionClearThreshold
 	);
 	if (hysteresis.lowLightBad) activeCodes.push("LOW_LIGHT");
-	// Above brightCellFractionPatchMax the entire ROI is bright, which is a bright room and
-	// not a glare patch - cleared outright rather than passed to the hysteresis, so a real
-	// patch that grows to fill the frame (walking into direct sun) stops claiming glare.
-	hysteresis.glareBad =
-		brightCellFraction !== null && brightCellFraction > config.thresholds.brightCellFractionPatchMax
-			? false
-			: applyHysteresis(
-					hysteresis.glareBad,
-					brightCellFraction,
-					config.thresholds.brightCellFractionThreshold,
-					config.thresholds.brightCellFractionClearThreshold
-				);
+	// Glare is a bright patch on an otherwise ordinary board, so it needs BOTH a blown-out
+	// share of cells and an uneven ROI. Either condition failing clears the verdict outright
+	// rather than feeding the hysteresis: an evenly bright ROI is a well-lit room (this is
+	// what the first shipped pass got wrong - see captureQualityConfig), and a patch that
+	// grows to fill the frame has stopped being a patch.
+	const glarePattern =
+		brightCellFraction === null ||
+		(brightCellFraction <= config.thresholds.brightCellFractionPatchMax &&
+			lumaSpread !== null &&
+			lumaSpread >= config.thresholds.cellLumaSpreadMin);
+	hysteresis.glareBad = glarePattern
+		? applyHysteresis(
+				hysteresis.glareBad,
+				brightCellFraction,
+				config.thresholds.brightCellFractionThreshold,
+				config.thresholds.brightCellFractionClearThreshold
+			)
+		: false;
 	if (hysteresis.glareBad) activeCodes.push("GLARE");
 	hysteresis.lowContrastBad = applyHysteresis(
 		hysteresis.lowContrastBad,
@@ -466,6 +486,7 @@ export function aggregateLowLightMetrics(
 		weightedMeanLuma: meanLuma,
 		weightedDarkCellFraction: darkCellFraction,
 		weightedBrightCellFraction: brightCellFraction,
+		weightedLumaSpread: lumaSpread,
 		weightedMeanContrastStd: meanContrastStd,
 		weightedFlatCellFraction: flatCellFraction,
 		latest,
@@ -504,7 +525,7 @@ export function evaluateLowLightWindowAggregate(
 			anyDetectedRoi = true;
 			metricsSequence.push(metrics);
 		} else {
-			metricsSequence.push({ ...metrics, brightCellFraction: null, meanContrastStd: null, flatCellFraction: null });
+			metricsSequence.push({ ...metrics, brightCellFraction: null, lumaSpread: null, meanContrastStd: null, flatCellFraction: null });
 		}
 		latestRoi = resolved.roi;
 		latestRoiSource = resolved.source;
@@ -563,6 +584,7 @@ export function evaluateLowLightWindow(
 	if (aggregate.weightedMeanLuma !== null) details.weightedMeanLuma = aggregate.weightedMeanLuma;
 	if (aggregate.weightedDarkCellFraction !== null) details.weightedDarkCellFraction = aggregate.weightedDarkCellFraction;
 	if (aggregate.weightedBrightCellFraction !== null) details.weightedBrightCellFraction = aggregate.weightedBrightCellFraction;
+	if (aggregate.weightedLumaSpread !== null) details.weightedLumaSpread = aggregate.weightedLumaSpread;
 	if (aggregate.weightedMeanContrastStd !== null) details.weightedMeanContrastStd = aggregate.weightedMeanContrastStd;
 	if (aggregate.weightedFlatCellFraction !== null) details.weightedFlatCellFraction = aggregate.weightedFlatCellFraction;
 	if (aggregate.latest) {
