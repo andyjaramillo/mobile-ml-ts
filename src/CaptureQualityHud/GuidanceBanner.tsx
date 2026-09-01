@@ -9,13 +9,11 @@ import { pickGuidanceMessage } from "./captureQualityGuidance";
 import type { SubjectPositionWindowAggregate } from "../CaptureQuality/subjectPositionCheck";
 import type { GuidanceSelectionCode } from "./captureQualityGuidance";
 import type { LowLightWindowAggregate } from "../CaptureQuality/lowLightCheck";
-import type { MarkerBoardCheckConfig, MarkerBoardWindowAggregate } from "../CaptureQuality/markerBoardCheck";
+import type { MarkerBoardWindowAggregate } from "../CaptureQuality/markerBoardCheck";
 
 interface Props {
 	markerBoardAggregate: MarkerBoardWindowAggregate | null;
 	lowLightAggregate: LowLightWindowAggregate | null;
-	/** Same config the page's own marker-board check runs with - supplies the ideal-band boundaries for the IDEAL positive state (see captureQualityGuidance.ts's pickGuidanceMessage). Same prop convention as MarkerBoardHud's `config`. */
-	markerBoardConfig: MarkerBoardCheckConfig;
 	/** Optional: omit (or pass null) and the banner behaves exactly as it did before subject detection existed - the fail-open path when the person model is unavailable. */
 	subjectAggregate?: SubjectPositionWindowAggregate | null;
 	showDebugHud: boolean;
@@ -32,15 +30,18 @@ interface Props {
 
 const CRITICAL_CODES = new Set<GuidanceSelectionCode>(["MARKER_INCOMPLETE", "MARKER_TOO_CLOSE", "MARKER_OBSTRUCTED"]);
 
-function toneFor(code: GuidanceSelectionCode): "ok" | "pending" | "critical" | "warning" {
-	if (code === "OK" || code === "IDEAL") return "ok";
+// SETUP_VERIFIED gets its own tone rather than reusing the green: green is the operator's
+// cue that the trial can start, and the patient is not in position yet.
+function toneFor(code: GuidanceSelectionCode): "ok" | "info" | "pending" | "critical" | "warning" {
+	if (code === "READY") return "ok";
+	if (code === "SETUP_VERIFIED") return "info";
 	if (code === "PENDING") return "pending";
 	if (CRITICAL_CODES.has(code)) return "critical";
 	return "warning";
 }
 
-function GuidanceBanner({ markerBoardAggregate, lowLightAggregate, markerBoardConfig, subjectAggregate = null, showDebugHud, onToggleDebugHud, hideDebugToggle = false, topOffsetPx = 0 }: Props) {
-	const selection = pickGuidanceMessage(markerBoardAggregate, lowLightAggregate, markerBoardConfig.thresholds, subjectAggregate);
+function GuidanceBanner({ markerBoardAggregate, lowLightAggregate, subjectAggregate = null, showDebugHud, onToggleDebugHud, hideDebugToggle = false, topOffsetPx = 0 }: Props) {
+	const selection = pickGuidanceMessage(markerBoardAggregate, lowLightAggregate, subjectAggregate);
 	const tone = toneFor(selection.code);
 
 	return (
@@ -99,6 +100,7 @@ const CSS = `
 	}
 	.gb-toggle:active { background: rgba(0, 0, 0, 0.4); }
 	.gb-ok { background: rgba(22, 163, 74, 0.92); }
+	.gb-info { background: rgba(37, 99, 235, 0.92); }
 	.gb-warning { background: rgba(217, 119, 6, 0.92); }
 	.gb-critical { background: rgba(220, 38, 38, 0.92); }
 	.gb-pending { background: rgba(75, 85, 99, 0.92); }

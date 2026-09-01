@@ -498,29 +498,29 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// without building that corrected metric first.
 		diagonalRatioMin: 0,
 		diagonalRatioMax: 1000,
-		// CALIBRATED 2026-08-12 (was 0.3 UNCALIBRATED). Three-point yaw curve, orientationRad
-		// median: aligned board 0.152 (max seen across all aligned recordings: 0.160),
-		// rot-slight (~43 deg intentional yaw) 0.822 (min seen: 0.774), rot-90 (90 deg yaw)
-		// 1.566. 0.45 clears the aligned ceiling and stays well under the misaligned floor.
-		// The >0.6 rad gap between aligned and misaligned means most of this margin is
-		// headroom for handheld PHONE ROLL, not board tolerance: orientationAngleRad is
-		// measured against image up, not the board's own frame (see
-		// computeOrientationAngleRad), so a board that IS placed dead-on reads 0.152 rad
-		// (8.7 deg) in every single recording - almost certainly the phone being held
-		// slightly tilted, not the board. Do not tighten this margin without separating
-		// phone roll from board yaw first (e.g. a device-orientation/gravity reading).
-		orientationMarginRad: 0.45,
-		// HYSTERESIS gap = 0.05 rad. No recording in this dataset sits near the 0.45
-		// boundary itself (aligned readings run 0.11-0.28 rad including the noisiest
-		// aligned recording, back-away; misaligned readings start at 0.77) so there is no
-		// direct "noise straddling this exact threshold" sample the way there is for size
-		// and full-set rate. Instead the gap is sized off the largest orientationAngleRad
-		// std measured on any clean, full-set-dominant recording - baseline's 0.01628 rad
-		// - at roughly 3x that value: enough to absorb realistic phone-roll jitter near the
-		// boundary without eating meaningfully into the >0.6 rad separation between aligned
-		// and misaligned readings that orientationMarginRad itself relies on (see that
-		// field's doc). Revisit if a future recording actually sits near 0.40-0.45 rad.
-		orientationClearMarginRad: 0.4,
+		// CALIBRATED 2026-09-01 (0.35, was 0.45 - 0.45 accepted a visibly yawed board).
+		// orientationRad medians: aligned 0.152, rot-slight (~43 deg yaw) 0.822, rot-90 1.566.
+		// Replaying all 23 recordings, classification is identical from 0.45 down to 0.30 -
+		// only the two rotated recordings fire. The binding constraint is back-away (aligned,
+		// handheld, max 0.2806, std 0.0326): 0.35 clears it by ~2.1 std, 0.30 by 0.019 rad,
+		// and 0.25 false-fires on 9.2% of its steps.
+		// Why this cannot go much lower: orientationAngleRad is measured against image up, not
+		// the board's own frame (see computeOrientationAngleRad), so a dead-on board still
+		// reads ~0.152 rad of handheld PHONE ROLL - leaving ~0.20 rad of real board yaw, not
+		// 0.35. Tightening further needs roll separated from yaw (e.g. a gravity reading).
+		orientationMarginRad: 0.35,
+		// HYSTERESIS gap = 0.05 rad, unchanged by the 2026-09-01 tightening - it tracks the
+		// warn level down. No recording in this dataset sits near the 0.35 boundary either
+		// (aligned readings run 0.11-0.28 rad including the noisiest aligned recording,
+		// back-away; misaligned readings start at 0.77), so there is still no direct "noise
+		// straddling this exact threshold" sample the way there is for size and full-set
+		// rate. Instead the gap is sized off the largest orientationAngleRad std measured on
+		// any clean, full-set-dominant recording - baseline's 0.01628 rad - at roughly 3x
+		// that value: enough to absorb realistic phone-roll jitter near the boundary without
+		// eating into the >0.4 rad separation between aligned and misaligned readings that
+		// orientationMarginRad itself relies on (see that field's doc). Revisit if a future
+		// recording actually sits near 0.30-0.35 rad.
+		orientationClearMarginRad: 0.3,
 		// SPEC-GIVEN 2026-08-13 (down from 0.90, itself SPEC-GIVEN 2026-08-12 - see git
 		// history). 0.90 produced 18 flaps replaying the overlay-match recording (a GOOD
 		// setup by the product's own framing spec) because its raw full-set rate is only
