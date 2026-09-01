@@ -26,7 +26,7 @@ import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
  */
 type GuidanceCode = Extract<
 	CaptureQualityIssueCode,
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "LOW_CONTRAST" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_AT_START_LINE"
+	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "GLARE" | "LOW_CONTRAST" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_AT_START_LINE"
 >;
 
 /**
@@ -48,6 +48,7 @@ export const CAPTURE_QUALITY_GUIDANCE_MESSAGES: Record<GuidanceSelectionCode, st
 	MARKER_TOO_SMALL: "Move a little closer to the floor marker.",
 	MARKER_TOO_LARGE: "Step back a little so there's room for the whole walk path in view.",
 	LOW_LIGHT: "Add more light to the room.",
+	GLARE: "Move the light or the board so the glare is off the floor marker.",
 	LOW_CONTRAST: "Reduce glare or backlight on the floor marker.",
 	MULTIPLE_PEOPLE: "Only the patient should be in view - ask others to step out of frame.",
 	SUBJECT_NOT_AT_START_LINE: "Ask the patient to move up to the floor marker to start.",
@@ -73,7 +74,8 @@ function isGuidanceCode(code: CaptureQualityIssueCode): code is GuidanceCode {
  * frame, and only then is the patient brought in. So every camera-side issue - board, then
  * lighting - outranks every subject-side one, and the subject tier is unreachable until
  * the room passes. Ranking them the other way round asks an operator to position a patient
- * against a view that is about to be moved.
+ * against a view that is about to be moved. GLARE is the one exception and sits above the
+ * board too - see its own comment below.
  *
  * markerBoardAggregate's own activeCodes is already at most one marker-board code (see
  * aggregateMarkerBoardMetrics), so `[0]` is safe here, not an arbitrary truncation.
@@ -85,6 +87,14 @@ export function pickGuidanceMessage(
 ): GuidanceSelection {
 	if (markerBoardAggregate === null) {
 		return select("PENDING");
+	}
+
+	// GLARE outranks the board, alone among the lighting codes: a blown-out patch is what
+	// CAUSES the marker dropout under it, so the board codes are downstream symptoms of it.
+	// The glare recording reports MARKER_OBSTRUCTED on 97% of its steps, and "make sure
+	// nothing is covering the floor marker" is the wrong instruction when nothing is.
+	if (lowLightAggregate?.activeCodes.includes("GLARE")) {
+		return select("GLARE");
 	}
 
 	const markerCode = markerBoardAggregate.activeCodes[0];

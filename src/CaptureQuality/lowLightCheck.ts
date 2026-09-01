@@ -156,6 +156,8 @@ export interface LowLightFrameMetrics {
 	darkCellFraction: number | null;
 	/** Mean of per-cell luma standard deviation, over computable cells. Null if computableCellCount is 0. */
 	meanContrastStd: number | null;
+	/** Fraction of computable cells at/above thresholds.cellBrightLumaMin - the GLARE signal, mirror of darkCellFraction. Null if computableCellCount is 0, or if this frame's ROI was not the detected board (see evaluateLowLightWindowAggregate). */
+	brightCellFraction: number | null;
 	/** Fraction of computable cells at/below thresholds.cellFlatContrastMax. Null if computableCellCount is 0. */
 	flatCellFraction: number | null;
 	/**
@@ -175,6 +177,7 @@ const EMPTY_METRICS: LowLightFrameMetrics = {
 	computableCellCount: 0,
 	meanLuma: null,
 	darkCellFraction: null,
+	brightCellFraction: null,
 	meanContrastStd: null,
 	flatCellFraction: null,
 	cellMeans: [],
@@ -223,6 +226,7 @@ export function evaluateLowLightFrame(
 	const cellContrasts: (number | null)[] = new Array(cellCount).fill(null);
 
 	let darkCells = 0;
+	let brightCells = 0;
 	let flatCells = 0;
 	let computableCellCount = 0;
 	let lumaSum = 0;
@@ -263,6 +267,7 @@ export function evaluateLowLightFrame(
 			lumaSum += mean;
 			contrastSum += std;
 			if (mean <= config.thresholds.cellDarkLumaMax) darkCells++;
+			if (mean >= config.thresholds.cellBrightLumaMin) brightCells++;
 			if (std <= config.thresholds.cellFlatContrastMax) flatCells++;
 		}
 	}
@@ -277,6 +282,7 @@ export function evaluateLowLightFrame(
 		computableCellCount,
 		meanLuma: lumaSum / computableCellCount,
 		darkCellFraction: darkCells / computableCellCount,
+		brightCellFraction: brightCells / computableCellCount,
 		meanContrastStd: contrastSum / computableCellCount,
 		flatCellFraction: flatCells / computableCellCount,
 		cellMeans,
@@ -287,15 +293,17 @@ export function evaluateLowLightFrame(
 /** Per-signal "is this currently firing" memory, mirroring MarkerBoardHysteresisState: a fraction sitting near a single fixed threshold oscillates with ordinary noise, which window smoothing alone does not remove. */
 export interface LowLightHysteresisState {
 	lowLightBad: boolean;
+	glareBad: boolean;
 	lowContrastBad: boolean;
 }
 
 export function createLowLightHysteresisState(): LowLightHysteresisState {
-	return { lowLightBad: false, lowContrastBad: false };
+	return { lowLightBad: false, glareBad: false, lowContrastBad: false };
 }
 
 export function resetLowLightHysteresisState(state: LowLightHysteresisState): void {
 	state.lowLightBad = false;
+	state.glareBad = false;
 	state.lowContrastBad = false;
 }
 
@@ -341,6 +349,7 @@ export interface LowLightWindowAggregate {
 	frameCount: number;
 	weightedMeanLuma: number | null;
 	weightedDarkCellFraction: number | null;
+	weightedBrightCellFraction: number | null;
 	weightedMeanContrastStd: number | null;
 	weightedFlatCellFraction: number | null;
 	/** Metrics for the newest frame in the window, for a responsive (non-averaged) readout. */
@@ -357,6 +366,7 @@ const EMPTY_AGGREGATE: LowLightWindowAggregate = {
 	frameCount: 0,
 	weightedMeanLuma: null,
 	weightedDarkCellFraction: null,
+	weightedBrightCellFraction: null,
 	weightedMeanContrastStd: null,
 	weightedFlatCellFraction: null,
 	latest: null,
@@ -382,6 +392,7 @@ export function aggregateLowLightMetrics(
 
 	let meanLuma: number | null = null;
 	let darkCellFraction: number | null = null;
+	let brightCellFraction: number | null = null;
 	let meanContrastStd: number | null = null;
 	let flatCellFraction: number | null = null;
 	let latest: LowLightFrameMetrics | null = null;
@@ -391,6 +402,7 @@ export function aggregateLowLightMetrics(
 	// time it actually sat unchanged, not the gap to the previous frame in the window.
 	let meanLumaAtMs: number | null = null;
 	let darkAtMs: number | null = null;
+	let brightAtMs: number | null = null;
 	let contrastAtMs: number | null = null;
 	let flatAtMs: number | null = null;
 
@@ -412,6 +424,8 @@ export function aggregateLowLightMetrics(
 		if (metrics.meanLuma !== null) meanLumaAtMs = nowMs;
 		darkCellFraction = blend(darkCellFraction, metrics.darkCellFraction, darkAtMs, nowMs);
 		if (metrics.darkCellFraction !== null) darkAtMs = nowMs;
+		brightCellFraction = blend(brightCellFraction, metrics.brightCellFraction, brightAtMs, nowMs);
+		if (metrics.brightCellFraction !== null) brightAtMs = nowMs;
 		meanContrastStd = blend(meanContrastStd, metrics.meanContrastStd, contrastAtMs, nowMs);
 		if (metrics.meanContrastStd !== null) contrastAtMs = nowMs;
 		flatCellFraction = blend(flatCellFraction, metrics.flatCellFraction, flatAtMs, nowMs);
@@ -426,6 +440,19 @@ export function aggregateLowLightMetrics(
 		config.thresholds.darkCellFractionClearThreshold
 	);
 	if (hysteresis.lowLightBad) activeCodes.push("LOW_LIGHT");
+	// Above brightCellFractionPatchMax the entire ROI is bright, which is a bright room and
+	// not a glare patch - cleared outright rather than passed to the hysteresis, so a real
+	// patch that grows to fill the frame (walking into direct sun) stops claiming glare.
+	hysteresis.glareBad =
+		brightCellFraction !== null && brightCellFraction > config.thresholds.brightCellFractionPatchMax
+			? false
+			: applyHysteresis(
+					hysteresis.glareBad,
+					brightCellFraction,
+					config.thresholds.brightCellFractionThreshold,
+					config.thresholds.brightCellFractionClearThreshold
+				);
+	if (hysteresis.glareBad) activeCodes.push("GLARE");
 	hysteresis.lowContrastBad = applyHysteresis(
 		hysteresis.lowContrastBad,
 		flatCellFraction,
@@ -438,6 +465,7 @@ export function aggregateLowLightMetrics(
 		frameCount: metricsSequence.length,
 		weightedMeanLuma: meanLuma,
 		weightedDarkCellFraction: darkCellFraction,
+		weightedBrightCellFraction: brightCellFraction,
 		weightedMeanContrastStd: meanContrastStd,
 		weightedFlatCellFraction: flatCellFraction,
 		latest,
@@ -476,7 +504,7 @@ export function evaluateLowLightWindowAggregate(
 			anyDetectedRoi = true;
 			metricsSequence.push(metrics);
 		} else {
-			metricsSequence.push({ ...metrics, meanContrastStd: null, flatCellFraction: null });
+			metricsSequence.push({ ...metrics, brightCellFraction: null, meanContrastStd: null, flatCellFraction: null });
 		}
 		latestRoi = resolved.roi;
 		latestRoiSource = resolved.source;
@@ -487,7 +515,10 @@ export function evaluateLowLightWindowAggregate(
 	// orientation gate and the same answer: unmeasurable is not bad, so drop the verdict
 	// instead of letting applyHysteresis's null-hold carry it indefinitely. The missing
 	// board is already MARKER_INCOMPLETE's to report.
-	if (!anyDetectedRoi && hysteresis) hysteresis.lowContrastBad = false;
+	if (!anyDetectedRoi && hysteresis) {
+		hysteresis.lowContrastBad = false;
+		hysteresis.glareBad = false;
+	}
 
 	const aggregate = aggregateLowLightMetrics(metricsSequence, config, hysteresis);
 	return { ...aggregate, latestRoi, latestRoiSource };
@@ -513,10 +544,11 @@ export function evaluateLatestLowLightFrame(
 	return { metrics: evaluateLowLightFrame(frames[frames.length - 1], config, roi), roi, roiSource: source };
 }
 
-const INDICATOR_BY_CODE: Record<"LOW_LIGHT" | "LOW_CONTRAST", { severity: CaptureQualitySeverity; state: CaptureQualityLiveIndicatorState }> = {
+const INDICATOR_BY_CODE: Record<"LOW_LIGHT" | "GLARE" | "LOW_CONTRAST", { severity: CaptureQualitySeverity; state: CaptureQualityLiveIndicatorState }> = {
 	// Non-critical/warning: degraded lighting makes marker detection less reliable but
 	// does not itself mean nothing was detected (that is MARKER_INCOMPLETE's job).
 	LOW_LIGHT: { severity: "non-critical", state: "warning" },
+	GLARE: { severity: "non-critical", state: "warning" },
 	LOW_CONTRAST: { severity: "non-critical", state: "warning" },
 };
 
@@ -530,6 +562,7 @@ export function evaluateLowLightWindow(
 	const details: CaptureQualityIssueDetails = { frameCount: aggregate.frameCount };
 	if (aggregate.weightedMeanLuma !== null) details.weightedMeanLuma = aggregate.weightedMeanLuma;
 	if (aggregate.weightedDarkCellFraction !== null) details.weightedDarkCellFraction = aggregate.weightedDarkCellFraction;
+	if (aggregate.weightedBrightCellFraction !== null) details.weightedBrightCellFraction = aggregate.weightedBrightCellFraction;
 	if (aggregate.weightedMeanContrastStd !== null) details.weightedMeanContrastStd = aggregate.weightedMeanContrastStd;
 	if (aggregate.weightedFlatCellFraction !== null) details.weightedFlatCellFraction = aggregate.weightedFlatCellFraction;
 	if (aggregate.latest) {

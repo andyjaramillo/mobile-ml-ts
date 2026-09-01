@@ -52,6 +52,11 @@ export function buildLightingCombos(grid: LightingSweepGrid = DEFAULT_LIGHTING_S
 								// Clear levels held at DEFAULTS, not swept - this tool
 								// explores warn-level placement only.
 								darkCellFractionClearThreshold: DEFAULTS.lighting.darkCellFractionClearThreshold,
+								// Not swept - the glare pair postdates this sweep's dark/flat focus.
+								cellBrightLumaMin: DEFAULTS.lighting.cellBrightLumaMin,
+								brightCellFractionThreshold: DEFAULTS.lighting.brightCellFractionThreshold,
+								brightCellFractionClearThreshold: DEFAULTS.lighting.brightCellFractionClearThreshold,
+								brightCellFractionPatchMax: DEFAULTS.lighting.brightCellFractionPatchMax,
 								cellFlatContrastMax,
 								flatCellFractionThreshold,
 								flatCellFractionClearThreshold: DEFAULTS.lighting.flatCellFractionClearThreshold,

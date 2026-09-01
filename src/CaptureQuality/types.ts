@@ -50,6 +50,10 @@ export const CAPTURE_QUALITY_ISSUE_CODES = [
 	"PROXIMATE_PEOPLE",
 	"LOW_LIGHT",
 	"LOW_CONTRAST",
+	// A blown-out patch on the board. Invisible to LOW_CONTRAST, and not a threshold away
+	// from it: glare RAISES local contrast, so the flat-cell metric reads a glared board as
+	// healthier than a good one (measured on the 2026-09-01 pair).
+	"GLARE",
 	"VIDEO_TOO_SHORT",
 	"VIDEO_TOO_LONG",
 ] as const;
