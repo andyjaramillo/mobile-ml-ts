@@ -139,9 +139,14 @@ describe("ROI scoping - the false-positive fix", () => {
 	});
 
 	it("the inverse: a bright board with a DARK surrounding does NOT warn", () => {
+		// 120 over 45, not the 210 over 20 this fixture used before GLARE existed. Both old
+		// values are outside anything a real capture produces (the two 2026-09-01 recordings
+		// span 45-126 clean and 45-171 under glare), and a 210 board over a 20 floor reads as
+		// exactly the blown-out patch GLARE now exists to report. The split is still a clear
+		// bright-board-on-dark-floor, and the assertion is unchanged.
 		const image = boardVsBackgroundImage(
-			(x, y) => textured(210, 25, x, y), // bright, textured board
-			(x, y) => textured(20, 5, x, y) // dark background - a whole-frame check could plausibly drag the mean down
+			(x, y) => textured(120, 25, x, y), // bright, textured board
+			(x, y) => textured(45, 5, x, y) // dark background - a whole-frame check could plausibly drag the mean down
 		);
 		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results).toEqual([]);
@@ -170,6 +175,65 @@ describe("ROI scoping - the false-positive fix", () => {
 		});
 		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
 		expect(results).toEqual([]);
+	});
+
+	it("reports GLARE for a blown-out patch on part of the board", () => {
+		// A bright patch over one side of the board, the rest at an ordinary level - the
+		// shape of the 2026-09-01 glare recording, where five of sixteen cells read bright
+		// and the markers under them stopped resolving.
+		const image = boardVsBackgroundImage(
+			(x, y) => (x > (BOARD_RECT.xNorm + BOARD_RECT.widthNorm / 2) * WIDTH ? 200 : textured(90, 25, x, y)),
+			(x, y) => textured(90, 25, x, y)
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
+		expect(results.map((r) => r.code)).toContain("GLARE");
+	});
+
+	it("does NOT report GLARE when the whole ROI is bright - that is a bright room, not a patch", () => {
+		const image = boardVsBackgroundImage(
+			(x, y) => textured(210, 25, x, y),
+			(x, y) => textured(210, 25, x, y)
+		);
+		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
+		expect(results.map((r) => r.code)).not.toContain("GLARE");
+	});
+
+	it("does not report GLARE off a fallback ROI either - a lamp in the default rect is not glare on the board", () => {
+		const blankBrightRoom = frameFor(
+			makeImageData(WIDTH, HEIGHT, (x, y) => (x > WIDTH / 2 ? 200 : textured(90, 25, x, y))),
+			null
+		);
+		const aggregate = evaluateLowLightWindowAggregate([blankBrightRoom, blankBrightRoom], config);
+		expect(aggregate.latestRoiSource).toBe("default");
+		expect(aggregate.activeCodes).not.toContain("GLARE");
+	});
+
+	it("does not report LOW_CONTRAST off a fallback ROI - a blank room says nothing about the board", () => {
+		// No markers anywhere, so the ROI falls to the default rect, which lands on floor and
+		// wall. Bright and perfectly flat: the reading is real, it is just not about the board.
+		const blankRoom = frameFor(makeImageData(WIDTH, HEIGHT, () => 200), null);
+		const aggregate = evaluateLowLightWindowAggregate([blankRoom, blankRoom, blankRoom], config);
+		expect(aggregate.latestRoiSource).toBe("default");
+		expect(aggregate.activeCodes).not.toContain("LOW_CONTRAST");
+	});
+
+	it("releases a LOW_CONTRAST verdict once no frame in the window still finds the board", () => {
+		const state = createLowLightHysteresisState();
+		const washedBoard = frameFor(
+			boardVsBackgroundImage(
+				() => 220,
+				(x, y) => textured(120, 40, x, y)
+			),
+			[markerAt(0, BOARD_RECT)]
+		);
+		expect(evaluateLowLightWindowAggregate([washedBoard], config, state).activeCodes).toContain("LOW_CONTRAST");
+
+		// Board gone: applyHysteresis's null-hold would otherwise carry that verdict forever,
+		// since only a detected-ROI frame can lower it again.
+		const blankRoom = frameFor(makeImageData(WIDTH, HEIGHT, () => 200), null);
+		const after = evaluateLowLightWindowAggregate([blankRoom, blankRoom], config, state);
+		expect(state.lowContrastBad).toBe(false);
+		expect(after.activeCodes).not.toContain("LOW_CONTRAST");
 	});
 });
 
@@ -309,6 +373,7 @@ describe("aggregateLowLightMetrics", () => {
 			frameCount: 0,
 			weightedMeanLuma: null,
 			weightedDarkCellFraction: null,
+			weightedBrightCellFraction: null,
 			weightedMeanContrastStd: null,
 			weightedFlatCellFraction: null,
 			latest: null,

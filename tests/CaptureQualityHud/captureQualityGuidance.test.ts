@@ -94,6 +94,17 @@ describe("priority order: board, then lighting, then subject", () => {
 		}
 	});
 
+	it("GLARE outranks the board - it is what causes the marker dropout under it", () => {
+		const selection = pickGuidanceMessage(markerAggregate(["MARKER_OBSTRUCTED"]), lightAggregate(["GLARE"]), CLEAN_SUBJECT);
+		expect(selection.code).toBe("GLARE");
+		expect(selection.message).toBe(CAPTURE_QUALITY_GUIDANCE_MESSAGES.GLARE);
+	});
+
+	it("the other lighting codes stay below the board", () => {
+		const selection = pickGuidanceMessage(markerAggregate(["MARKER_OBSTRUCTED"]), lightAggregate(["LOW_LIGHT"]), CLEAN_SUBJECT);
+		expect(selection.code).toBe("MARKER_OBSTRUCTED");
+	});
+
 	it("lighting outranks every subject code", () => {
 		for (const code of ["MULTIPLE_PEOPLE", "SUBJECT_NOT_AT_START_LINE", "SUBJECT_NOT_DETECTED"] as const) {
 			const selection = pickGuidanceMessage(markerAggregate([]), lightAggregate(["LOW_LIGHT"]), subjectAggregate([code]));
