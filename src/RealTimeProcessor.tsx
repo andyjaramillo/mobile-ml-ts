@@ -528,7 +528,6 @@ const RealTimeProcessor = () => {
            <GuidanceBanner
              markerBoardAggregate={markerBoardAggregate}
              lowLightAggregate={lowLightAggregate}
-             markerBoardConfig={markerBoardConfigRef.current}
              showDebugHud={showDebugHud}
              onToggleDebugHud={() => setShowDebugHud((v) => !v)}
              topOffsetPx={40}

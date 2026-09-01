@@ -535,8 +535,11 @@ describe("MarkerBoardHysteresisState / hysteresis in aggregateMarkerBoardMetrics
 
 	it("orientation requires dropping below orientationClearMarginRad, not just orientationMarginRad, to release", () => {
 		const state = createMarkerBoardHysteresisState();
+		// Derived from the config: this test is about the gap between the two levels, not
+		// about where the calibrated values sit.
+		const { orientationMarginRad: warn, orientationClearMarginRad: clear } = config.thresholds;
 		const rotated = aggregateMarkerBoardMetrics(
-			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: 0.5 }],
+			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: warn + 0.05 }],
 			config,
 			undefined,
 			state
@@ -544,10 +547,10 @@ describe("MarkerBoardHysteresisState / hysteresis in aggregateMarkerBoardMetrics
 		expect(rotated.activeCodes).toEqual(["MARKER_WRONG_ORIENTATION"]);
 		expect(state.orientationBad).toBe(true);
 
-		// Back under orientationMarginRad (0.45) but not under orientationClearMarginRad
-		// (0.40) - must still report WRONG_ORIENTATION.
+		// Back under orientationMarginRad but not under orientationClearMarginRad - must
+		// still report WRONG_ORIENTATION.
 		const partialRecovery = aggregateMarkerBoardMetrics(
-			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: 0.42 }],
+			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: (warn + clear) / 2 }],
 			config,
 			undefined,
 			state
@@ -556,7 +559,7 @@ describe("MarkerBoardHysteresisState / hysteresis in aggregateMarkerBoardMetrics
 		expect(state.orientationBad).toBe(true);
 
 		const fullRecovery = aggregateMarkerBoardMetrics(
-			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: 0.35 }],
+			[{ ...metricsFullSetAt(AREA_IDEAL_MEDIAN), orientationAngleRad: clear - 0.05 }],
 			config,
 			undefined,
 			state

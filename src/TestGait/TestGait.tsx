@@ -165,7 +165,6 @@ function TestGait({ patientView = false }: TestGaitProps) {
 					<GuidanceBanner
 						markerBoardAggregate={captureQuality.markerBoardAggregate}
 						lowLightAggregate={captureQuality.lowLightAggregate}
-						markerBoardConfig={captureQuality.stateRef.current.markerBoardConfig}
 						subjectAggregate={captureQuality.subjectPositionAggregate}
 						showDebugHud={debugVisible}
 						onToggleDebugHud={() => setShowDebugHud((v) => !v)}
