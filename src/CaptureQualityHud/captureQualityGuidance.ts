@@ -19,14 +19,15 @@ import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
  * the ones the product set out to warn about - too many people, subject too far back from
  * the start line, board not fully visible, board too far or too close - plus lighting.
  * SUBJECT_NOT_STATIONARY and START_LINE_UNKNOWN are deliberately absent: neither is a thing
- * this feature reports, and the check no longer emits them as gates. SUBJECT_NOT_DETECTED
+ * this feature reports, and the check no longer emits them as gates. LOW_CONTRAST is absent
+ * because lowLightCheck no longer emits it either - see its retirement note. SUBJECT_NOT_DETECTED
  * is absent for a different reason - it is not a warning at all in this flow, it is the
  * expected state right after the room passes, and pickGuidanceMessage turns it into
  * SETUP_VERIFIED.
  */
 type GuidanceCode = Extract<
 	CaptureQualityIssueCode,
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "GLARE" | "LOW_CONTRAST" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_AT_START_LINE"
+	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "GLARE" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_AT_START_LINE"
 >;
 
 /**
@@ -49,7 +50,6 @@ export const CAPTURE_QUALITY_GUIDANCE_MESSAGES: Record<GuidanceSelectionCode, st
 	MARKER_TOO_LARGE: "Step back a little so there's room for the whole walk path in view.",
 	LOW_LIGHT: "Add more light to the room.",
 	GLARE: "Move the light or the board so the glare is off the floor marker.",
-	LOW_CONTRAST: "Reduce glare or backlight on the floor marker.",
 	MULTIPLE_PEOPLE: "Only the patient should be in view - ask others to step out of frame.",
 	SUBJECT_NOT_AT_START_LINE: "Ask the patient to move up to the floor marker to start.",
 	PENDING: "Checking your setup...",

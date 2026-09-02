@@ -479,7 +479,24 @@ export function aggregateLowLightMetrics(
 		config.thresholds.flatCellFractionThreshold,
 		config.thresholds.flatCellFractionClearThreshold
 	);
-	if (hysteresis.lowContrastBad) activeCodes.push("LOW_CONTRAST");
+	// RETIRED as a warning 2026-09-02: the verdict is still computed, and both it and
+	// weightedFlatCellFraction are still reported for the debug HUD, but nothing is pushed.
+	//
+	// It measured board GEOMETRY more than lighting. A 4x4 grid over a 3x3 marker board puts
+	// cells on the blank gaps between markers, and a gap cell is flat by construction - which
+	// cells land in gaps shifts with sub-pixel camera movement. On top of that the grid runs
+	// over a 72x128 canvas (the video downsampled ~14x, so the board is ~33x30px and each
+	// marker's 5x5 pattern is averaged away entirely), and 16 cells quantize the fraction into
+	// 6.25-point steps. Replaying 1024-viable-range-sweep, the flat-cell count sits at 0.6-2.9
+	// for the whole recording and spikes to 4.2 on ONE sample - enough to fire, from nothing
+	// the operator did. A tester reported it as "feels buggy".
+	//
+	// Nothing is lost by dropping it. Whether the camera can resolve the board is answered
+	// directly by whether ArUco resolves it (MARKER_INCOMPLETE / MARKER_OBSTRUCTED), and the
+	// two lighting causes it stood in for have their own calibrated codes: GLARE for a
+	// blown-out board, LOW_LIGHT for a dark room. The thresholds below were never fitted -
+	// they are still marked UNCALIBRATED - so there was no calibration to preserve either.
+	void hysteresis.lowContrastBad;
 
 	return {
 		frameCount: metricsSequence.length,
