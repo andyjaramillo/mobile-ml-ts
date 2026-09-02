@@ -63,6 +63,8 @@ export function lightingSampleToMetrics(
 		darkCellFraction: estimateFractionBelow(sample.luma, thresholds.cellDarkLumaMax),
 		// Mirror of darkCellFraction, from the other end of the same interpolated inverse-CDF.
 		brightCellFraction: 1 - estimateFractionBelow(sample.luma, thresholds.cellBrightLumaMin),
+		// Exact, not interpolated: min and max are two of the six stored markers.
+		lumaSpread: sample.luma.max - sample.luma.min,
 		meanContrastStd: sample.contrast.mean,
 		flatCellFraction: estimateFractionBelow(sample.contrast, thresholds.cellFlatContrastMax),
 		cellMeans: [],

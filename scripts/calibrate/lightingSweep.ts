@@ -57,6 +57,7 @@ export function buildLightingCombos(grid: LightingSweepGrid = DEFAULT_LIGHTING_S
 								brightCellFractionThreshold: DEFAULTS.lighting.brightCellFractionThreshold,
 								brightCellFractionClearThreshold: DEFAULTS.lighting.brightCellFractionClearThreshold,
 								brightCellFractionPatchMax: DEFAULTS.lighting.brightCellFractionPatchMax,
+								cellLumaSpreadMin: DEFAULTS.lighting.cellLumaSpreadMin,
 								cellFlatContrastMax,
 								flatCellFractionThreshold,
 								flatCellFractionClearThreshold: DEFAULTS.lighting.flatCellFractionClearThreshold,
