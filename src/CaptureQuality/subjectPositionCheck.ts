@@ -51,12 +51,18 @@ export interface SubjectPositionCheckConfig {
 	ewmaReferenceTickHz: number;
 }
 
+/**
+ * The two sampling fields deliberately do NOT mirror the other checks: this check's samples
+ * arrive at the person-detect cadence, an order of magnitude slower than the display tick,
+ * so it takes its own weight stated at its own rate.
+ */
 export function defaultSubjectPositionCheckConfig(config: CaptureQualityConfig = DEFAULTS): SubjectPositionCheckConfig {
+	const detectHz = config.sampling.liveTickHz / Math.max(1, config.sampling.personDetectEveryNTicks);
 	return {
 		layout: MARKER_BOARD,
 		thresholds: config.subjectPosition,
-		liveWindowRecencyWeight: config.sampling.liveWindowRecencyWeight,
-		ewmaReferenceTickHz: config.sampling.ewmaReferenceTickHz,
+		liveWindowRecencyWeight: config.sampling.subjectWindowRecencyWeight,
+		ewmaReferenceTickHz: detectHz > 0 ? detectHz : config.sampling.ewmaReferenceTickHz,
 	};
 }
 
@@ -232,23 +238,78 @@ export function evaluateSubjectPositionFrame(
 	};
 }
 
+/**
+ * The two DISCRETE signals - is anyone there, is there more than one - carry a committed
+ * verdict plus the candidate the EWMA drives and a run of consecutive detection samples
+ * agreeing with that candidate. Smoothing alone cannot steady them: resolveEwmaAlpha scales
+ * the weight by elapsed wall-clock, so a slow device gets a HIGHER alpha (0.76 at the 1.5s
+ * detect gap two 2026-09-01 recordings actually ran at) - less smoothing exactly where the
+ * detector is noisiest. Counting samples is immune to that, and a dropped person is a
+ * per-sample event rather than a per-second one. The position signals below need no run
+ * counter: board-to-subject gap is continuous, and EWMA smoothing suits it.
+ */
 export interface SubjectPositionHysteresisState {
 	tooFarBackBad: boolean;
 	tooFarForwardBad: boolean;
 	notDetectedBad: boolean;
+	notDetectedCandidate: boolean;
+	notDetectedRun: number;
+	multiplePeopleBad: boolean;
+	multiplePeopleCandidate: boolean;
+	multiplePeopleRun: number;
+	/** Timestamp of the newest detection sample already counted, so a tick that ran no detection cannot advance a run. */
+	lastDetectionAtMs: number | null;
 }
 
 export function createSubjectPositionHysteresisState(): SubjectPositionHysteresisState {
-	return { tooFarBackBad: false, tooFarForwardBad: false, notDetectedBad: false };
+	return {
+		tooFarBackBad: false,
+		tooFarForwardBad: false,
+		notDetectedBad: false,
+		notDetectedCandidate: false,
+		notDetectedRun: 0,
+		multiplePeopleBad: false,
+		multiplePeopleCandidate: false,
+		multiplePeopleRun: 0,
+		lastDetectionAtMs: null,
+	};
 }
 
 export function resetSubjectPositionHysteresisState(state: SubjectPositionHysteresisState): void {
 	state.tooFarBackBad = false;
 	state.tooFarForwardBad = false;
 	state.notDetectedBad = false;
+	state.notDetectedCandidate = false;
+	state.notDetectedRun = 0;
+	state.multiplePeopleBad = false;
+	state.multiplePeopleCandidate = false;
+	state.multiplePeopleRun = 0;
+	state.lastDetectionAtMs = null;
 }
 
 /** Same semantics as markerBoardCheck's applyHysteresis - duplicated rather than exported across checks so neither module owns the other's flapping behavior. */
+/**
+ * Commits `candidate` into the returned verdict once `run` consecutive NEW detection samples
+ * have agreed with it, so a single-sample detector blip never reaches the banner. Returns the
+ * updated [verdict, run] pair; `sawNewSample` is false on a tick where detection did not run,
+ * which must neither advance nor reset the run.
+ */
+function commitAfterConsecutive(
+	verdict: boolean,
+	candidate: boolean,
+	run: number,
+	sawNewSample: boolean,
+	samplesRequired: number
+): [boolean, number] {
+	// A tick with no new sample leaves the run UNTOUCHED - resetting it there would wipe the
+	// progress made on the last real sample, and since detection runs 1-in-N ticks the run
+	// could never reach the threshold at all (both codes silently dead).
+	if (!sawNewSample) return [verdict, run];
+	if (candidate === verdict) return [verdict, 0];
+	const next = run + 1;
+	return next >= samplesRequired ? [candidate, 0] : [verdict, next];
+}
+
 function applyHysteresis(
 	state: boolean,
 	value: number | null,
@@ -443,12 +504,38 @@ export function aggregateSubjectPositionMetrics(
 		};
 	}
 
-	hysteresis.notDetectedBad = applyHysteresis(
+	// A tick where person detection did not run must not advance either run counter - it
+	// carries no new evidence, and counting it would let idle ticks flip a verdict.
+	let newestDetectionAtMs: number | null = null;
+	let newestPersonCount: number | null = null;
+	for (let i = metricsSequence.length - 1; i >= 0; i--) {
+		if (metricsSequence[i].personCount !== null) {
+			newestDetectionAtMs = metricsSequence[i].timestampMs;
+			newestPersonCount = metricsSequence[i].personCount;
+			break;
+		}
+	}
+	const sawNewSample = newestDetectionAtMs !== null && newestDetectionAtMs !== hysteresis.lastDetectionAtMs;
+	// The FIRST sample of a trial commits immediately. Debouncing it would mean opening on
+	// the default verdict (someone is there, alone) for one sample, which shows a green
+	// "ready to begin" before correcting itself - worse than a moment of latency.
+	const samplesRequired = hysteresis.lastDetectionAtMs === null ? 1 : thresholds.consecutiveSamplesToFlip;
+	if (sawNewSample) hysteresis.lastDetectionAtMs = newestDetectionAtMs;
+
+	// Candidates come from the RAW newest sample, not the EWMA. "Is anyone there" is a binary
+	// observation and N-consecutive-samples is the smoothing for one; passing it through an
+	// EWMA threshold first stacks two lags, which made a real absence take three misses
+	// instead of two. The weighted scores stay computed for the HUD but gate nothing.
+	if (newestPersonCount !== null) {
+		hysteresis.notDetectedCandidate = newestPersonCount === 0;
+		hysteresis.multiplePeopleCandidate = newestPersonCount > 1;
+	}
+	[hysteresis.notDetectedBad, hysteresis.notDetectedRun] = commitAfterConsecutive(
 		hysteresis.notDetectedBad,
-		weightedDetectionScore,
-		thresholds.minimumDetectionWeight,
-		thresholds.minimumDetectionClearWeight,
-		"below"
+		hysteresis.notDetectedCandidate,
+		hysteresis.notDetectedRun,
+		sawNewSample,
+		samplesRequired
 	);
 	// Two bounds on the same signal, in opposite directions. A LARGER box means NEARER THE
 	// CAMERA, which means FURTHER BACK from the board; a SMALLER box means further forward,
@@ -477,8 +564,17 @@ export function aggregateSubjectPositionMetrics(
 	const activeCodes: CaptureQualityIssueCode[] = [];
 
 	// 1. More than one person: reported first because it makes "the subject" ambiguous, and
-	//    the geometry below describes whichever box selectSubject picked.
-	if (weightedMultiPersonScore !== null && weightedMultiPersonScore > thresholds.multiplePeopleWeight) {
+	//    the geometry below describes whichever box selectSubject picked. Hysteresis, like
+	//    the gates below it - this was a bare threshold compare until 2026-09-01, so one
+	//    spurious second person raised it and one clean frame dropped it again.
+	[hysteresis.multiplePeopleBad, hysteresis.multiplePeopleRun] = commitAfterConsecutive(
+		hysteresis.multiplePeopleBad,
+		hysteresis.multiplePeopleCandidate,
+		hysteresis.multiplePeopleRun,
+		sawNewSample,
+		samplesRequired
+	);
+	if (hysteresis.multiplePeopleBad) {
 		activeCodes.push("MULTIPLE_PEOPLE");
 	}
 

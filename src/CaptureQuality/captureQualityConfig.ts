@@ -283,6 +283,8 @@ export interface SubjectPositionThresholds {
 	minimumDetectionClearWeight: number;
 	/** Recency-weighted fraction of detection frames showing more than one person before MULTIPLE_PEOPLE fires. */
 	multiplePeopleWeight: number;
+	/** Consecutive person-detection samples that must agree before SUBJECT_NOT_DETECTED or MULTIPLE_PEOPLE changes state. Counts SAMPLES, not seconds, so it holds at any frame rate - see SubjectPositionHysteresisState. */
+	consecutiveSamplesToFlip: number;
 	/**
 	 * NOT A GATE. Coefficient of variation of the subject's bbox area - reported on the debug
 	 * HUD only. Stillness is not something this feature warns about. Retained because it is
@@ -403,6 +405,14 @@ export interface SamplingConfig {
 	 * SUBJECT_NOT_DETECTED.
 	 */
 	personDetectEveryNTicks: number;
+	/**
+	 * EWMA weight for the SUBJECT check specifically, expressed at the rate person detection
+	 * actually samples (liveTickHz / personDetectEveryNTicks) rather than at
+	 * ewmaReferenceTickHz. Separate from liveWindowRecencyWeight because the two checks run
+	 * at rates an order of magnitude apart - see DEFAULTS for why sharing one number
+	 * silently disabled the subject smoothing.
+	 */
+	subjectWindowRecencyWeight: number;
 	postRecordingSampleFraction: number;
 	postRecordingSampleWindow: "middle" | "start" | "end";
 }
@@ -608,11 +618,24 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// MEASURED: person detection fired on 100% of detection ticks in every recording with
 		// someone in frame, and 0% in subject-absent. Total separation, so this gate does easy
 		// work; 0.6 mirrors markerBoard.minimumFullSetWeight rather than being fitted.
+		// NOT GATES as of 2026-09-01 - see consecutiveSamplesToFlip. "Is anyone there" is a
+		// binary observation, and counting consecutive samples is the right smoothing for one;
+		// running it through an EWMA threshold first stacked two lags. Kept for the HUD, which
+		// plots weightedDetectionScore against this floor.
 		minimumDetectionWeight: 0.6,
 		minimumDetectionClearWeight: 0.67,
 		// MEASURED: the two-person recording read exactly 2 people on every detection tick and
 		// every single-person recording read exactly 1. Again total separation.
+		//
+		// NO LONGER A GATE as of 2026-09-01: MULTIPLE_PEOPLE, like SUBJECT_NOT_DETECTED, is now
+		// decided by consecutiveSamplesToFlip against the raw sample count. Kept because the
+		// HUD reports the weighted score against it and it records the measured separation.
 		multiplePeopleWeight: 0.5,
+		// 2 samples. Replaying false-glare-b, personCount 1,1,0,2,1 gave four banner changes in
+		// five samples; every one was a single-sample detector blip. A real change still lands
+		// on the second sample - 0.75s at the design cadence, 2s on the slowest recording here,
+		// which is why this is not 3.
+		consecutiveSamplesToFlip: 2,
 		// NOT A GATE - see the field doc.
 		areaCoefficientOfVariationMax: 0.2,
 	},
@@ -690,6 +713,11 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// lowering the tick rate if the budget gets tight - a laggy start-line hint is a far
 		// cheaper failure than a laggy marker/lighting banner.
 		personDetectEveryNTicks: 3,
+		// Stated AT the detection cadence, which defaultSubjectPositionCheckConfig passes as
+		// the reference, so the number means what it says here. Sharing liveWindowRecencyWeight
+		// (0.15 at 30Hz) did not: rescaled across the 375ms detect gap it became alpha 0.84,
+		// leaving the position signals essentially unsmoothed.
+		subjectWindowRecencyWeight: 0.3,
 		postRecordingSampleFraction: 0.5, // spec-given: sample the middle 50% of the recorded video for most post-recording checks
 		postRecordingSampleWindow: "middle", // spec-given positioning convention; not every check will use it (e.g. VIDEO_TOO_SHORT/VIDEO_TOO_LONG need the full timeline, not a sampled window)
 	},

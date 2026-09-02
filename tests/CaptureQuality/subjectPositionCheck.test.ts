@@ -240,6 +240,87 @@ describe("aggregateSubjectPositionMetrics", () => {
 	});
 });
 
+describe("single-sample detector blips must not reach the banner", () => {
+	// The reported bug: the tester saw the banner cycling between "no subject", "multiple
+	// people" and correct within a second or two. Every case here steps tick by tick through
+	// a shared hysteresis state, the way the live loop drives it - passing a whole window in
+	// one call (as the tests above do) only ever presents ONE new sample and so cannot
+	// exercise the debounce at all.
+	const AT_LINE = personAt(500, 326);
+
+	/** Feeds one frame per tick and returns the code active after each. */
+	function bannerPerTick(peoplePerTick: (CaptureQualityBBox[] | null)[]): string[] {
+		const hysteresis = createSubjectPositionHysteresisState();
+		const frames: CaptureQualityFrameSample[] = [];
+		return peoplePerTick.map((people, i) => {
+			frames.push(frame(i * 375, people));
+			const aggregate = aggregateSubjectPositionMetrics(
+				frames.slice(-DEFAULTS.sampling.liveWindowFrameCount).map((f) => evaluateSubjectPositionFrame(f, config)),
+				config,
+				hysteresis
+			);
+			return aggregate.activeCodes[0] ?? "ok";
+		});
+	}
+
+	it("absorbs a one-sample dropout instead of reporting SUBJECT_NOT_DETECTED", () => {
+		const codes = bannerPerTick([[AT_LINE], [AT_LINE], [], [AT_LINE], [AT_LINE]]);
+		expect(codes).not.toContain("SUBJECT_NOT_DETECTED");
+	});
+
+	it("still reports a real absence, on the second consecutive miss", () => {
+		const codes = bannerPerTick([[AT_LINE], [AT_LINE], [], [], []]);
+		expect(codes[2]).not.toBe("SUBJECT_NOT_DETECTED");
+		expect(codes[3]).toBe("SUBJECT_NOT_DETECTED");
+	});
+
+	it("absorbs a one-sample second person instead of reporting MULTIPLE_PEOPLE", () => {
+		const codes = bannerPerTick([
+			[AT_LINE],
+			[AT_LINE],
+			[AT_LINE, personAt(200, 326)],
+			[AT_LINE],
+			[AT_LINE],
+		]);
+		expect(codes).not.toContain("MULTIPLE_PEOPLE");
+	});
+
+	it("still reports a real second person, on the second consecutive sample", () => {
+		const other = personAt(200, 326);
+		const codes = bannerPerTick([[AT_LINE], [AT_LINE], [AT_LINE, other], [AT_LINE, other], [AT_LINE, other]]);
+		expect(codes[3]).toBe("MULTIPLE_PEOPLE");
+	});
+
+	it("needs two clean samples to clear, so recovery does not flap either", () => {
+		const codes = bannerPerTick([[], [], [], [AT_LINE], [AT_LINE], [AT_LINE]]);
+		expect(codes[2]).toBe("SUBJECT_NOT_DETECTED");
+		expect(codes[3]).toBe("SUBJECT_NOT_DETECTED");
+		expect(codes[4]).not.toBe("SUBJECT_NOT_DETECTED");
+	});
+
+	it("commits the FIRST sample immediately - no green 'ready' flash before it settles", () => {
+		const codes = bannerPerTick([[], [], []]);
+		expect(codes[0]).toBe("SUBJECT_NOT_DETECTED");
+	});
+
+	it("ticks that ran no detection neither advance nor reset the run", () => {
+		// A 1-in-3 round robin: only every third tick carries evidence. Two real misses
+		// separated by skipped ticks must still take exactly two DETECTION samples to fire.
+		const codes = bannerPerTick([[AT_LINE], null, null, [], null, null, [], null, null]);
+		expect(codes[3]).not.toBe("SUBJECT_NOT_DETECTED");
+		expect(codes[5]).not.toBe("SUBJECT_NOT_DETECTED");
+		expect(codes[6]).toBe("SUBJECT_NOT_DETECTED");
+	});
+
+	it("holds one steady verdict across the recorded blip sequence that produced the report", () => {
+		// personCount 1,1,0,2,1 - the 2026-09-01-gait-roi-false-glare-b sequence, which
+		// produced four banner changes in five samples before this fix.
+		const other = personAt(200, 326);
+		const codes = bannerPerTick([[AT_LINE], [AT_LINE], [], [AT_LINE, other], [AT_LINE]]);
+		expect(new Set(codes).size).toBe(1);
+	});
+});
+
 describe("SubjectPositionFrameWindow", () => {
 	it("bounds the window and drops the oldest frames", () => {
 		const window = createSubjectPositionFrameWindow(3);
