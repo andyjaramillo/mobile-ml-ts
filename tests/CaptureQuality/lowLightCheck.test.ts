@@ -153,14 +153,17 @@ describe("ROI scoping - the false-positive fix", () => {
 		expect(results).toEqual([]);
 	});
 
-	it("a flat/washed board trips LOW_CONTRAST regardless of a differently-textured background", () => {
+	it("never emits LOW_CONTRAST, even for a perfectly flat board - the code is retired", () => {
+		// This fixture asserted the opposite until 2026-09-02 - see lowLightCheck.ts for why
+		// the code is retired while the metric it produces is kept.
 		const image = boardVsBackgroundImage(
 			() => 220, // perfectly flat, bright board
 			(x, y) => textured(120, 40, x, y) // ordinary textured background
 		);
-		const results = evaluateLowLightWindow([frameFor(image, [markerAt(0, BOARD_RECT)])], config);
-		expect(results.map((r) => r.code)).toContain("LOW_CONTRAST");
-		expect(results.map((r) => r.code)).not.toContain("LOW_LIGHT");
+		const frame = frameFor(image, [markerAt(0, BOARD_RECT)]);
+		expect(evaluateLowLightWindow([frame], config).map((r) => r.code)).not.toContain("LOW_CONTRAST");
+		// Still measured, for the debug HUD.
+		expect(evaluateLowLightWindowAggregate([frame], config).weightedFlatCellFraction).toBeGreaterThan(0);
 	});
 
 	it("reproduces the reported bug: blank wall/floor/ceiling cells far outside the board no longer count toward LOW_CONTRAST", () => {
@@ -238,10 +241,13 @@ describe("ROI scoping - the false-positive fix", () => {
 			),
 			[markerAt(0, BOARD_RECT)]
 		);
-		expect(evaluateLowLightWindowAggregate([washedBoard], config, state).activeCodes).toContain("LOW_CONTRAST");
+		evaluateLowLightWindowAggregate([washedBoard], config, state);
+		expect(state.lowContrastBad).toBe(true);
 
 		// Board gone: applyHysteresis's null-hold would otherwise carry that verdict forever,
-		// since only a detected-ROI frame can lower it again.
+		// since only a detected-ROI frame can lower it again. Still asserted on the internal
+		// verdict rather than the emitted code - LOW_CONTRAST is retired (see above), but the
+		// release path still guards GLARE, which shares it.
 		const blankRoom = frameFor(makeImageData(WIDTH, HEIGHT, () => 200), null);
 		const after = evaluateLowLightWindowAggregate([blankRoom, blankRoom], config, state);
 		expect(state.lowContrastBad).toBe(false);
@@ -341,20 +347,23 @@ describe("hysteresis (LOW_LIGHT/LOW_CONTRAST)", () => {
 		expect(agg.activeCodes).not.toContain("LOW_LIGHT");
 	});
 
-	it("does the same for LOW_CONTRAST independently of LOW_LIGHT", () => {
+	it("does the same for the flat-cell verdict independently of LOW_LIGHT", () => {
+		// Asserts the verdict, not an emitted code: LOW_CONTRAST is retired but still computed
+		// for the HUD, and its hysteresis must keep working.
 		const hysteresis = createLowLightHysteresisState();
 		const warn = config.thresholds.flatCellFractionThreshold;
 		const clear = config.thresholds.flatCellFractionClearThreshold;
 
-		let agg = aggregateLowLightMetrics([metricsWithFractions(0, warn + 0.05)], config, hysteresis);
-		expect(agg.activeCodes).toContain("LOW_CONTRAST");
+		const agg = aggregateLowLightMetrics([metricsWithFractions(0, warn + 0.05)], config, hysteresis);
+		expect(hysteresis.lowContrastBad).toBe(true);
 		expect(agg.activeCodes).not.toContain("LOW_LIGHT");
 
-		agg = aggregateLowLightMetrics([metricsWithFractions(0, (warn + clear) / 2)], config, hysteresis);
-		expect(agg.activeCodes).toContain("LOW_CONTRAST");
+		// Between warn and clear: the verdict must hold, as it does for LOW_LIGHT above.
+		aggregateLowLightMetrics([metricsWithFractions(0, (warn + clear) / 2)], config, hysteresis);
+		expect(hysteresis.lowContrastBad).toBe(true);
 
-		agg = aggregateLowLightMetrics([metricsWithFractions(0, clear - 0.02)], config, hysteresis);
-		expect(agg.activeCodes).not.toContain("LOW_CONTRAST");
+		aggregateLowLightMetrics([metricsWithFractions(0, clear - 0.02)], config, hysteresis);
+		expect(hysteresis.lowContrastBad).toBe(false);
 	});
 });
 

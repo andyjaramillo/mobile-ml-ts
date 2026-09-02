@@ -673,6 +673,9 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// shipped first pass was missing. See cellBrightLumaMin above for the measurements.
 		brightCellFractionPatchMax: 0.75,
 		cellLumaSpreadMin: 110,
+		// RETIRED 2026-09-02 - LOW_CONTRAST is no longer emitted (see lowLightCheck.ts for
+		// why). These three still drive the flat-cell metric the debug HUD plots; they gate
+		// nothing, and were never calibrated.
 		cellFlatContrastMax: 10,
 		flatCellFractionThreshold: 0.2,
 		flatCellFractionClearThreshold: 0.15,
