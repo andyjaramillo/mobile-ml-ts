@@ -270,6 +270,39 @@ describe("orientation is evaluated independent of (and ahead of) both the full-s
 	});
 });
 
+describe("MARKER_NOT_DETECTED - no board in view at all", () => {
+	function metricsWithVisible(visibleCount: number, visibleIds: number[]): MarkerBoardFrameMetrics {
+		return {
+			timestampMs: 0,
+			visibleCount,
+			visibleIds,
+			isFullSet: false,
+			normalizedArea: null,
+			diagonalRatio: null,
+			orientationAngleRad: null,
+			geometryOk: null,
+			orientationOk: null,
+			detectedMarkerAreaNorm: null,
+		};
+	}
+
+	it("reports MARKER_NOT_DETECTED when not one marker was decoded across the window", () => {
+		const frames = [0, 1, 2, 3, 4].map(() => metricsWithVisible(0, []));
+		expect(aggregateMarkerBoardMetrics(frames, config).activeCodes).toEqual(["MARKER_NOT_DETECTED"]);
+	});
+
+	it("reports MARKER_INCOMPLETE, not MARKER_NOT_DETECTED, once any marker is seen", () => {
+		const frames = [metricsWithVisible(0, []), metricsWithVisible(2, [1, 5]), metricsWithVisible(0, [])];
+		expect(aggregateMarkerBoardMetrics(frames, config).activeCodes).toEqual(["MARKER_INCOMPLETE"]);
+	});
+
+	it("does not read absence off a missing detected-area, which CQ1 recordings never carry", () => {
+		// Keying on detectedMarkerAreaNorm === null made every CQ1 replay look like an empty room.
+		const frames = [metricsWithVisible(4, [0, 1, 2, 3])];
+		expect(aggregateMarkerBoardMetrics(frames, config).activeCodes).not.toContain("MARKER_NOT_DETECTED");
+	});
+});
+
 describe("MARKER_TOO_CLOSE / MARKER_OBSTRUCTED / MARKER_INCOMPLETE split", () => {
 	function metricsIncomplete(detectedMarkerAreaNorm: number | null): MarkerBoardFrameMetrics {
 		return {

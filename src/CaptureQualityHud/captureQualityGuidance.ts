@@ -27,7 +27,7 @@ import type { CaptureQualityIssueCode } from "../CaptureQuality/types";
  */
 type GuidanceCode = Extract<
 	CaptureQualityIssueCode,
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "GLARE" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_AT_START_LINE"
+	"MARKER_NOT_DETECTED" | "MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_WRONG_ORIENTATION" | "MARKER_SKEWED" | "MARKER_NOT_ALIGNED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "LOW_LIGHT" | "GLARE" | "MULTIPLE_PEOPLE" | "SUBJECT_NOT_AT_START_LINE"
 >;
 
 /**
@@ -40,6 +40,7 @@ export type GuidanceSelectionCode = GuidanceCode | "PENDING" | "SETUP_VERIFIED" 
 // Phrased as an instruction ("do this"), never a diagnosis ("this measurement failed") -
 // a patient reads this, not a developer. Kept short and plain per the task brief.
 export const CAPTURE_QUALITY_GUIDANCE_MESSAGES: Record<GuidanceSelectionCode, string> = {
+	MARKER_NOT_DETECTED: "Point the camera at the floor marker board.",
 	MARKER_INCOMPLETE: "Move closer to the floor marker so the whole board is visible.",
 	MARKER_TOO_CLOSE: "Step back so the whole floor marker fits in view.",
 	MARKER_OBSTRUCTED: "Make sure nothing is covering the floor marker.",

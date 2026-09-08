@@ -559,6 +559,9 @@ export function aggregateMarkerBoardMetrics(
 	let detectedMarkerAreaNorm: number | null = null;
 	let boardCentroidNorm: { x: number; y: number } | null = null;
 	let latest: MarkerBoardFrameMetrics | null = null;
+	// Counted directly, not inferred from a null detectedMarkerAreaNorm: that is null both for
+	// "no markers in view" and for "this format never carried the number" (CQ1).
+	let sawAnyMarker = false;
 
 	// Each signal decays over the time since IT last advanced, not since the last frame in
 	// the window - the geometry EWMAs below skip partial-board frames entirely, so a shared
@@ -590,6 +593,7 @@ export function aggregateMarkerBoardMetrics(
 	for (const metrics of metricsSequence) {
 		latest = metrics;
 		const nowMs = metrics.timestampMs;
+		if (metrics.visibleCount > 0) sawAnyMarker = true;
 
 		const fullSetSample = metrics.isFullSet ? 1 : 0;
 		const fullSetAlpha = alphaSince(fullSetAtMs, nowMs);
@@ -740,7 +744,12 @@ export function aggregateMarkerBoardMetrics(
 		activeCodes.push("MARKER_WRONG_ORIENTATION");
 	} else if (hysteresis.fullSetBad) {
 		const ceiling = config.thresholds.tooCloseDetectedAreaNorm;
-		if (hasPersistentMiss && detectedMarkerAreaNorm !== null && ceiling !== null && detectedMarkerAreaNorm > ceiling) {
+		// Must precede the size split: both its branches need an area that cannot exist with no
+		// markers, so they fall through to MARKER_INCOMPLETE ("move closer") - the wrong
+		// instruction when the camera is not pointed at a board.
+		if (!sawAnyMarker) {
+			activeCodes.push("MARKER_NOT_DETECTED");
+		} else if (hasPersistentMiss && detectedMarkerAreaNorm !== null && ceiling !== null && detectedMarkerAreaNorm > ceiling) {
 			activeCodes.push("MARKER_TOO_CLOSE");
 		} else if (
 			hasPersistentMiss &&
@@ -841,9 +850,10 @@ export function evaluateMarkerBoardWindowAggregate(
 }
 
 const INDICATOR_BY_CODE: Record<
-	"MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "MARKER_SKEWED" | "MARKER_WRONG_ORIENTATION" | "MARKER_NOT_ALIGNED",
+	"MARKER_NOT_DETECTED" | "MARKER_INCOMPLETE" | "MARKER_TOO_CLOSE" | "MARKER_OBSTRUCTED" | "MARKER_TOO_SMALL" | "MARKER_TOO_LARGE" | "MARKER_SKEWED" | "MARKER_WRONG_ORIENTATION" | "MARKER_NOT_ALIGNED",
 	{ severity: CaptureQualitySeverity; state: CaptureQualityLiveIndicatorState }
 > = {
+	MARKER_NOT_DETECTED: { severity: "critical", state: "critical" },
 	MARKER_INCOMPLETE: { severity: "critical", state: "critical" },
 	MARKER_TOO_CLOSE: { severity: "critical", state: "critical" },
 	MARKER_OBSTRUCTED: { severity: "critical", state: "critical" },

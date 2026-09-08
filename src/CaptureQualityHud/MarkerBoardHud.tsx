@@ -23,6 +23,7 @@ function fmt(value: number | null | undefined): string {
 }
 
 const CODE_LABEL: Record<CaptureQualityIssueCode, string> = {
+	MARKER_NOT_DETECTED: "NOT DETECTED",
 	MARKER_INCOMPLETE: "INCOMPLETE",
 	MARKER_TOO_CLOSE: "TOO CLOSE",
 	MARKER_TOO_SMALL: "TOO SMALL",
