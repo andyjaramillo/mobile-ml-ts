@@ -17,6 +17,10 @@
 
 /** Canonical issue codes every check can emit. Keep in sync with the i18n key set. */
 export const CAPTURE_QUALITY_ISSUE_CODES = [
+	// Not one marker decoded anywhere in the recency window. Distinct from MARKER_INCOMPLETE,
+	// which means SOME of the board is being read and closing the distance is the remedy;
+	// here the camera is not looking at a board, so "move closer" points at the wrong fix.
+	"MARKER_NOT_DETECTED",
 	"MARKER_INCOMPLETE",
 	"MARKER_TOO_CLOSE",
 	"MARKER_TOO_SMALL",

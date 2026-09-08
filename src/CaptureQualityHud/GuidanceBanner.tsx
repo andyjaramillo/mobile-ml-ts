@@ -28,7 +28,7 @@ interface Props {
 	topOffsetPx?: number;
 }
 
-const CRITICAL_CODES = new Set<GuidanceSelectionCode>(["MARKER_INCOMPLETE", "MARKER_TOO_CLOSE", "MARKER_OBSTRUCTED"]);
+const CRITICAL_CODES = new Set<GuidanceSelectionCode>(["MARKER_NOT_DETECTED", "MARKER_INCOMPLETE", "MARKER_TOO_CLOSE", "MARKER_OBSTRUCTED"]);
 
 // SETUP_VERIFIED gets its own tone rather than reusing the green: green is the operator's
 // cue that the trial can start, and the patient is not in position yet.
