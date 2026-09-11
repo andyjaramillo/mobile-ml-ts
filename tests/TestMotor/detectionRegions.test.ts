@@ -23,9 +23,15 @@ describe("detectionRegions", () => {
 		const [region] = detectionRegions(W, H, "halves");
 		// The whole-frame path scaled by 192/1620 = 0.118; the point of halves is a
 		// materially larger hand at the model input, not a marginally larger one.
+		//
+		// This guard is deliberately tight enough to fail when HAND_GUIDE_BOX is widened:
+		// the crops are derived from that box, so every widening spends resolution. It read
+		// 2.6x at the box's original 0.694 width and 2.0x after the 2026-09-10 widening to
+		// 0.88. If a future widening drops it below this, the halves framing has given back
+		// most of what it was introduced to win and needs rethinking, not a lower number.
 		const wholeFrameScale = 192 / W;
 		const halvesScale = 192 / region.sw;
-		expect(halvesScale / wholeFrameScale).toBeGreaterThan(2.5);
+		expect(halvesScale / wholeFrameScale).toBeGreaterThan(1.9);
 	});
 
 	it("keeps both crops inside the frame", () => {

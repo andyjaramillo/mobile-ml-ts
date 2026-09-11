@@ -8,20 +8,27 @@
 
 /**
  * The guide box the patient must put both hands inside, as a fraction of the displayed
- * frame. Taken from the dashed rect in MotorTrackingGraphic's own 839x520 viewBox
- * (x=112.5 y=239.5 w=582 h=245) so the box the check tests against and the box the
- * patient sees are the same rectangle by construction.
+ * frame. The SVG guide draws this same rectangle (see MotorTrackingGraphic), so the box
+ * the check tests against and the box the patient sees are one rectangle by construction.
  *
  * Website derived this at runtime instead, by reading the SVG's getBoundingClientRect
  * and scaling it by the overlay canvas's internal size. That canvas had no width/height
  * attributes, so it was 300x150 while the detections were in displayed-pixel space - the
  * box and the hands were being compared in two different coordinate systems. Deriving it
- * from the viewBox removes the DOM round trip and that whole class of bug.
+ * from a constant removes the DOM round trip and that whole class of bug.
+ *
+ * WIDENED 2026-09-10 from the source asset's 0.134-0.828 (x=112.5 w=582 in the 839-wide
+ * viewBox) to 0.06-0.94, because two hands held at a natural distance apart did not fit.
+ *
+ * Widening this is NOT free: detectionRegions derives its crops from this box, so a wider
+ * box means a larger crop and fewer model-input pixels per hand - at 1620x911 the palm
+ * goes from ~58px to ~46px, against ~22px for the whole-frame framing this replaced.
+ * There is a width past which the resolution win is given back entirely.
  */
 export const HAND_GUIDE_BOX = {
-	x: 112.5 / 839,
+	x: 0.06,
 	y: 239.5 / 520,
-	width: 582 / 839,
+	width: 0.88,
 	height: 245 / 520,
 } as const;
 
