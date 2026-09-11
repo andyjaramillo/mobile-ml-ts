@@ -1,6 +1,7 @@
 // [Feature: Test Motor]
 //
-// Every tunable the motor hand check has, in one place. NOTHING HERE IS CALIBRATED.
+// Every tunable the motor hand check has, in one place. Each is marked FITTED (against a
+// committed recording) or UNCALIBRATED (a guess). Most are still guesses.
 // The gait checks earned their numbers by replaying committed recordings (see
 // captureQualityConfig.ts); these are either carried over from values hardcoded in
 // Website's hand_model.ts, where they were arrived at by eye, or first guesses at
@@ -62,27 +63,45 @@ export const HAND_ALIGNMENT_RADIANS = { min: -2.0, max: -1.0 } as const;
 export const PALM_FACING_MIN_SCORE = 0.15;
 
 /**
- * Minimum knuckle-to-tip distance, in palm-size units, for every finger. Below this a
- * finger is curled. UNCALIBRATED.
+ * Minimum knuckle-to-tip distance, in palm-size units, for every finger.
+ *
+ * FITTED from tests/TestMotor/fixtures/palms-forward-spread-then-natural.mh4.txt
+ * (2026-09-10, 46 two-hand ticks, palms forward, alternating spread and relaxed). Spread
+ * fingers measured 0.73-0.84 and a relaxed hand with the fingers still apart measured
+ * 0.52-0.69; both are acceptable setups, so the boundary sits below 0.52. At the original
+ * guess of 0.75 this rejected 43 of 92 hands in that take, all of them correct.
+ *
+ * The UPPER side is calibrated, the LOWER side is not: no recording of a closed fist or
+ * of fingers pressed flat together exists yet, so how much room is left before those
+ * start passing is unmeasured. Do not lower this further without one.
  */
-export const FINGER_EXTENSION_MIN = 0.75;
+export const FINGER_EXTENSION_MIN = 0.45;
 
 /**
  * Minimum gap between neighbouring fingertips, in palm-size units. Below this the fingers
- * are pressed together or overlapping. UNCALIBRATED.
+ * are pressed together or overlapping.
+ *
+ * Left at its guessed value: in the take above it measured 0.24-0.47 and never came close
+ * to binding, so that recording confirms it does not cause false rejections but says
+ * nothing about whether it is tight enough to catch fingers held together. UNCALIBRATED
+ * in the direction that matters.
  */
 export const FINGER_SEPARATION_MIN = 0.12;
 
 /**
- * MediaPipe documents handedness as assuming a MIRRORED (selfie-flipped) input image. The
- * detector is fed the raw sensor frame, so the label it returns is the opposite of the
- * patient's actual hand and has to be swapped.
+ * MediaPipe documents handedness as assuming a MIRRORED (selfie-flipped) input image, and
+ * the detector is fed the raw sensor frame - which reads as "swap the label".
  *
- * Asserted from the documentation, not measured, and getting it backwards silently swaps
- * every left/right instruction - so the check derives the side independently from which
- * half of the guide the hand is in, uses THAT, and records whether the two agree.
+ * MEASURED FALSE. In the 2026-09-10 take every one of 92 hands disagreed with the side
+ * derived from the guide half, on both hands at once - a systematic inversion, not a
+ * patient crossing their hands. So MediaPipe's raw label already matches the patient's
+ * actual hand here, most likely because the front-facing stream arrives already mirrored.
+ *
+ * This flag only drives the cross-check: the side the patient is told about comes from
+ * the guide half, which is what they can see and act on. That is why the disagreement was
+ * visible in the data instead of silently swapping every left/right instruction.
  */
-export const SWAP_MEDIAPIPE_HANDEDNESS = true;
+export const SWAP_MEDIAPIPE_HANDEDNESS = false;
 
 /** Motor is a selfie assessment: the preview is mirrored, so display x is flipped. */
 export const MIRROR_PREVIEW = true;

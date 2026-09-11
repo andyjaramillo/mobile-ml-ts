@@ -176,3 +176,99 @@ export function buildCompactExport(state: MotorRecorderState): string {
 	const suffix = "|TRUNCATED";
 	return line.length <= MAX_EXPORT_CHARS ? line : `${line.slice(0, MAX_EXPORT_CHARS - suffix.length)}${suffix}`;
 }
+
+// The decoder lives beside the encoder on purpose - one format, one implementation, no
+// drift between what the phone writes and what a replay test reads. (captureRecorder.ts
+// states the same goal but splits its parser into scripts/calibrate/.)
+
+export interface ParsedHand {
+	/** Normalised to the frame, as recorded. */
+	x: number;
+	y: number;
+	degrees: number;
+	flags: number;
+	/** The RAW geometry, rescaled back from the integer encoding. */
+	palmFacingScore: number;
+	minFingerExtension: number;
+	minFingerSeparation: number;
+	/** The verdicts the RECORDING device reached, which a replay may disagree with. */
+	insideGuide: boolean;
+	upright: boolean;
+	side: "left" | "right";
+	fullyInFrame: boolean;
+	palmFacing: boolean;
+	open: boolean;
+	sidesAgree: boolean;
+}
+
+export interface ParsedSample {
+	code: string;
+	hands: ParsedHand[];
+}
+
+export interface ParsedMotorExport {
+	tag: string;
+	stride: number;
+	backend: string;
+	frameWidth: number;
+	frameHeight: number;
+	tickHz: number;
+	inferenceMs: number;
+	codes: string[];
+	samples: ParsedSample[];
+}
+
+function headerValue(parts: string[], key: string): string {
+	const found = parts.find((part) => part.startsWith(`${key}=`));
+	return found ? found.slice(key.length + 1) : "";
+}
+
+function parseHand(encoded: string): ParsedHand {
+	const [x, y, degrees, flags, facing, extension, separation] = encoded.split(",").map(Number);
+	return {
+		x: x / POS_MILLI,
+		y: y / POS_MILLI,
+		degrees,
+		flags,
+		palmFacingScore: facing / FACING_MILLI,
+		minFingerExtension: extension / EXTENSION_CENTI,
+		minFingerSeparation: separation / SEPARATION_MILLI,
+		insideGuide: (flags & 1) !== 0,
+		upright: (flags & 2) !== 0,
+		side: (flags & 4) !== 0 ? "right" : "left",
+		fullyInFrame: (flags & 8) !== 0,
+		palmFacing: (flags & 16) !== 0,
+		open: (flags & 32) !== 0,
+		sidesAgree: (flags & 64) !== 0,
+	};
+}
+
+export function parseMotorExport(line: string): ParsedMotorExport {
+	const parts = line.trim().split("|");
+	if (parts[0] !== "MH4") throw new Error(`unsupported export format: ${parts[0]}`);
+
+	const [width, height] = headerValue(parts, "res").split("x").map(Number);
+	const codes = headerValue(parts, "codes").split(",");
+
+	const samples = parts[parts.length - 1]
+		.split(";")
+		.filter((chunk) => chunk.length > 0)
+		.map((chunk) => {
+			const separatorAt = chunk.indexOf(":");
+			const code = codes[Number(chunk.slice(0, separatorAt))];
+			const handsPart = chunk.slice(separatorAt + 1);
+			return { code, hands: handsPart ? handsPart.split("/").map(parseHand) : [] };
+		});
+
+	return {
+		tag: parts[1],
+		stride: Number(headerValue(parts, "stride")),
+		backend: headerValue(parts, "be"),
+		frameWidth: width,
+		frameHeight: height,
+		tickHz: Number(headerValue(parts, "hz")),
+		inferenceMs: Number(headerValue(parts, "inf")),
+		codes,
+		samples,
+	};
+}

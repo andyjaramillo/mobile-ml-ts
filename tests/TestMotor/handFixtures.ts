@@ -9,6 +9,7 @@
 import type { Point2D } from "../../src/TestMotor/handGeometry";
 import { LM } from "../../src/TestMotor/handGeometry";
 import type { LandmarkedHand } from "../../src/TestMotor/handLandmarker";
+import { SWAP_MEDIAPIPE_HANDEDNESS } from "../../src/TestMotor/motorConfig";
 
 /** Wrist at the origin, y down, palm size (wrist -> middle knuckle) exactly 100. */
 const CANONICAL: Record<number, Point2D> = {
@@ -99,6 +100,13 @@ export function handLandmarks(options: HandOptions = {}): Point2D[] {
  * silhouette, and a fixture that only moved the position would arrive with its palm sign
  * inverted and read as the back of the hand.
  */
+/** The raw label MediaPipe would report for a patient hand on this side. */
+export function agreeingHandedness(side: "left" | "right"): "Left" | "Right" {
+	const asPatientSide = side === "left" ? "Left" : "Right";
+	if (!SWAP_MEDIAPIPE_HANDEDNESS) return asPatientSide;
+	return asPatientSide === "Left" ? "Right" : "Left";
+}
+
 export function toSensorSpace(landmarks: readonly Point2D[], frameWidth: number): Point2D[] {
 	return landmarks.map((point) => ({ x: frameWidth - point.x, y: point.y }));
 }
@@ -111,9 +119,10 @@ export function landmarkedHand(
 	const display = handLandmarks(handOptions);
 	return {
 		landmarks: frameWidth === undefined ? display : toSensorSpace(display, frameWidth),
-		// MediaPipe is fed an unmirrored frame and documented to assume a mirrored one, so
-		// the label it returns is the opposite of the patient's actual hand.
-		rawHandedness: rawHandedness ?? (side === "left" ? "Right" : "Left"),
+		// Derived from the constant rather than fixed, so these fixtures describe a hand
+		// MediaPipe agrees with whichever way the swap is set - the tests are about the
+		// check, not about which way that constant currently points.
+		rawHandedness: rawHandedness ?? agreeingHandedness(side),
 		handednessScore: 0.95,
 	};
 }

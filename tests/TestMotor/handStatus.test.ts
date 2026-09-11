@@ -7,7 +7,7 @@ import {
 	resetHandStatusWindow,
 } from "../../src/TestMotor/handStatus";
 import { HAND_GUIDE_BOX, MIRROR_PREVIEW, STATUS_WINDOW_TICKS } from "../../src/TestMotor/motorConfig";
-import { landmarkedHand } from "./handFixtures";
+import { agreeingHandedness, landmarkedHand } from "./handFixtures";
 import type { HandOptions } from "./handFixtures";
 
 const FRAME_W = 1620;
@@ -117,12 +117,14 @@ describe("evaluateHandFrame", () => {
 	});
 
 	it("keeps MediaPipe handedness as a cross-check, not as the answer", () => {
-		// Guide half says left; handedness is deliberately fed the wrong way round.
+		// Guide half says left; handedness is deliberately fed the opposite of whatever
+		// would agree, which is what a wrong SWAP constant looks like in the data.
+		const disagreeing = agreeingHandedness("left") === "Left" ? "Right" : "Left";
 		const [hand] = evaluate([landmarkedHand({
 			side: "left",
 			frameWidth: FRAME_W,
 			at: { x: PATIENT_LEFT_X, y: MID_Y + 55 },
-			rawHandedness: "Left",
+			rawHandedness: disagreeing,
 		})]).hands;
 		expect(hand.side).toBe("left");
 		expect(hand.handednessSide).toBe("right");
