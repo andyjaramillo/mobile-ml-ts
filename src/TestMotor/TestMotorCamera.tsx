@@ -13,8 +13,11 @@ import Webcam from "react-webcam";
 import MotorTrackingGraphic from "./MotorTrackingGraphic";
 import MotorGuidanceBanner from "./MotorGuidanceBanner";
 import MotorHandHud from "./MotorHandHud";
+import MotorRecorderPanel from "./MotorRecorderPanel";
 import DebugHudStack from "../CaptureQualityHud/DebugHudStack";
 import { detectHands, letterboxParams, HAND_MODEL_INPUT_SIZE } from "./handModel";
+import { recordMotorTick } from "./motorRecorder";
+import type { MotorRecorderState } from "./motorRecorder";
 import { evaluateHandFrame, pushHandStatus } from "./handStatus";
 import type { HandFrameEvaluation, HandStatusWindow, MotorIssueCode } from "./handStatus";
 import { drawHandOverlay } from "./handOverlayDraw";
@@ -45,6 +48,8 @@ interface Props {
 	totalTests: number;
 	handModel: HandModelHandle;
 	statusWindowRef: React.MutableRefObject<HandStatusWindow>;
+	/** Owned by the parent so one recording can span several takes. */
+	recorderStateRef: React.MutableRefObject<MotorRecorderState>;
 	patientView: boolean;
 	onRecorded: (blob: Blob, mimeType: string) => void;
 }
@@ -63,7 +68,7 @@ const VIDEO_CONSTRAINTS = {
 const GUIDE_OK_COLOR = "#33FF00";
 const GUIDE_BAD_COLOR = "#FF0000";
 
-function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindowRef, patientView, onRecorded }: Props) {
+function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindowRef, recorderStateRef, patientView, onRecorded }: Props) {
 	const webcamRef = useRef<Webcam>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -85,6 +90,7 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 
 	const [status, setStatus] = useState<MotorIssueCode>("PENDING");
 	const [evaluation, setEvaluation] = useState<HandFrameEvaluation | null>(null);
+	const [detectorStats, setDetectorStats] = useState({ maxScore: 0, aboveThresholdCount: 0 });
 
 	const [isRecording, setIsRecording] = useState(false);
 	const isRecordingRef = useRef(false);
@@ -252,20 +258,35 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 					const imageData = hiddenCtx.getImageData(0, 0, HAND_MODEL_INPUT_SIZE, HAND_MODEL_INPUT_SIZE);
 
 					const inferenceStartedAt = performance.now();
-					const detections = await detectHands(model, imageData, frameWidth, frameHeight);
+					const result = await detectHands(model, imageData, frameWidth, frameHeight);
 					inferenceMsRef.current = performance.now() - inferenceStartedAt;
 
 					// null means the pass threw, which is not the same as finding no hands -
 					// leave the last answer standing rather than reporting NO_HANDS_DETECTED.
-					if (detections && !cancelled) {
-						const frameEvaluation = evaluateHandFrame(detections, frameWidth, frameHeight);
+					if (result && !cancelled) {
+						const frameEvaluation = evaluateHandFrame(result.detections, frameWidth, frameHeight);
 						const reported = pushHandStatus(statusWindowRef.current, frameEvaluation.code);
 						drawHandOverlay(overlayCtx, frameEvaluation.hands, frameWidth, frameHeight, debugVisible);
+
+						recorderStateRef.current.backend = model.backend ?? "-";
+						recorderStateRef.current.scoreThreshold = model.scoreThreshold;
+						recordMotorTick(recorderStateRef.current, {
+							maxScore: result.maxScore,
+							aboveThresholdCount: result.aboveThresholdCount,
+							groupedCount: result.detections.length,
+							code: frameEvaluation.code,
+							hands: frameEvaluation.hands,
+							frameWidth,
+							frameHeight,
+							inferenceMs: inferenceMsRef.current,
+							tickHz: tickHzRef.current,
+						});
 
 						tickRef.current += 1;
 						if (tickRef.current % HUD_UPDATE_EVERY_N_TICKS === 0) {
 							setEvaluation(frameEvaluation);
 							setStatus(reported);
+							setDetectorStats({ maxScore: result.maxScore, aboveThresholdCount: result.aboveThresholdCount });
 						}
 					}
 				}
@@ -280,7 +301,7 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 			if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
 			rafRef.current = null;
 		};
-	}, [videoDimensions, debugVisible, statusWindowRef]);
+	}, [videoDimensions, debugVisible, statusWindowRef, recorderStateRef]);
 
 	// Sizing the overlay's backing store to the displayed box keeps drawing coordinates
 	// and check coordinates in the same space.
@@ -511,9 +532,13 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 
 			{showSetupUi && debugVisible && (
 				<DebugHudStack topOffsetPx={175}>
+					<MotorRecorderPanel stateRef={recorderStateRef} embedded />
 					<MotorHandHud
 						evaluation={evaluation}
 						reported={status}
+						maxScore={detectorStats.maxScore}
+						aboveThresholdCount={detectorStats.aboveThresholdCount}
+						scoreThreshold={handModel.model?.scoreThreshold ?? 0}
 						backend={handModel.backend}
 						modelReady={checkAvailable}
 						tickHz={tickHzRef.current}

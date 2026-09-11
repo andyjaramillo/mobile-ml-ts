@@ -31,6 +31,18 @@ export interface HandModelHandle {
  */
 let cachedLoad: Promise<HandModel | null> | null = null;
 
+/**
+ * `?ort=wasm` or `?ort=webgl` pins the execution provider. ort-web's WebGL provider is
+ * legacy and degrades per-operator without erroring, so being able to force WASM on the
+ * actual phone - no rebuild, no redeploy - is the difference between diagnosing that in
+ * one take and guessing at it.
+ */
+function forcedBackendFromUrl(): HandModelBackend {
+	if (typeof window === "undefined") return null;
+	const requested = new URLSearchParams(window.location.search).get("ort");
+	return requested === "wasm" || requested === "webgl" ? requested : null;
+}
+
 export function useHandModel(enabled = true): HandModelHandle {
 	const [handle, setHandle] = useState<HandModelHandle>({ model: null, status: "loading", backend: null });
 
@@ -41,7 +53,7 @@ export function useHandModel(enabled = true): HandModelHandle {
 		}
 
 		let cancelled = false;
-		if (!cachedLoad) cachedLoad = initHandModel();
+		if (!cachedLoad) cachedLoad = initHandModel(undefined, forcedBackendFromUrl() ?? undefined);
 		cachedLoad.then((model) => {
 			if (cancelled) return;
 			setHandle(

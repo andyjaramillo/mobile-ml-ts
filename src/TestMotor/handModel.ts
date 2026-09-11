@@ -50,6 +50,19 @@ export interface HandDetection {
 
 export type HandModelBackend = "webgl" | "wasm" | null;
 
+export interface HandDetectionResult {
+	detections: HandDetection[];
+	/**
+	 * Highest sigmoid score across every anchor, BEFORE the threshold. The single most
+	 * diagnostic number this module produces: it separates "the model saw nothing" (a bad
+	 * input, or a backend returning garbage) from "the model saw hands and the threshold
+	 * or the grouping discarded them", which have opposite fixes.
+	 */
+	maxScore: number;
+	/** Anchors above scoreThreshold, before grouping collapses duplicates. */
+	aboveThresholdCount: number;
+}
+
 export interface HandModel {
 	session: ort.InferenceSession;
 	backend: HandModelBackend;
@@ -60,13 +73,22 @@ export interface HandModel {
  * Resolves to null when no backend can be created. Callers must treat that as "run
  * without the check" - a model that will not load must never block recording.
  */
-export async function initHandModel(scoreThreshold = DEFAULT_SCORE_THRESHOLD): Promise<HandModel | null> {
+export async function initHandModel(
+	scoreThreshold = DEFAULT_SCORE_THRESHOLD,
+	forcedBackend?: HandModelBackend
+): Promise<HandModel | null> {
 	// Multi-threaded WASM needs COOP/COEP; single-threaded keeps browser support broad.
 	ort.env.wasm.numThreads = 1;
 
 	// WebGL first, WASM as the fallback: WebGL-only sessions throw "no available backend
 	// to use" when GPU init fails, which happens on some Chrome sessions.
-	const providerAttempts: string[][] = [["webgl", "wasm"], ["wasm"]];
+	//
+	// forcedBackend exists because ort-web's WebGL provider is legacy and silently falls
+	// back per-operator; pinning WASM is the only way to tell a wrong-results-on-GPU
+	// problem apart from a wrong-input problem without a rebuild.
+	const providerAttempts: string[][] = forcedBackend
+		? [[forcedBackend]]
+		: [["webgl", "wasm"], ["wasm"]];
 
 	for (const executionProviders of providerAttempts) {
 		try {
@@ -120,16 +142,18 @@ function decodeDetections(
 	frameWidth: number,
 	frameHeight: number,
 	scoreThreshold: number
-): HandDetection[] {
+): HandDetectionResult {
 	const outputNames = Object.keys(outputMap);
 	const boxDelta = outputMap[outputNames[0]].data as Float32Array;
 	const rawScores = outputMap[outputNames[1]].data as Float32Array;
 
 	const { ratio, padW, padH } = letterboxParams(frameWidth, frameHeight);
 	const detections: HandDetection[] = [];
+	let maxScore = 0;
 
 	for (let i = 0; i < ANCHORS.length; i++) {
 		const score = sigmoid(rawScores[i]);
+		if (score > maxScore) maxScore = score;
 		if (score <= scoreThreshold) continue;
 
 		const offset = i * VALUES_PER_ANCHOR;
@@ -165,8 +189,12 @@ function decodeDetections(
 		});
 	}
 
-	if (detections.length === 0) return [];
-	return groupBoxes(detections, GROUP_DISTANCE_PX) as HandDetection[];
+	const aboveThresholdCount = detections.length;
+	return {
+		detections: aboveThresholdCount === 0 ? [] : (groupBoxes(detections, GROUP_DISTANCE_PX) as HandDetection[]),
+		maxScore,
+		aboveThresholdCount,
+	};
 }
 
 /**
@@ -182,7 +210,7 @@ export async function detectHands(
 	imageData: ImageData,
 	frameWidth: number,
 	frameHeight: number
-): Promise<HandDetection[] | null> {
+): Promise<HandDetectionResult | null> {
 	try {
 		const feeds: Record<string, ort.Tensor> = {
 			[model.session.inputNames[0]]: imageDataToTensor(imageData.data),

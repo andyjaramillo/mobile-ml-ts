@@ -15,6 +15,7 @@ import TestMotorReview from "./TestMotorReview";
 import TestMotorDone from "./TestMotorDone";
 import useHandModel from "./useHandModel";
 import { createHandStatusWindow, resetHandStatusWindow } from "./handStatus";
+import { createMotorRecorderState } from "./motorRecorder";
 import { MOTOR_TESTS } from "./motorConfig";
 
 type Phase = "permission" | "camera" | "review" | "done";
@@ -39,6 +40,9 @@ function TestMotor({ patientView = false }: TestMotorProps) {
 
 	const handModel = useHandModel();
 	const statusWindowRef = useRef(createHandStatusWindow());
+	// Not reset per take, unlike the status window: an operator recording a calibration
+	// run wants the whole session in one Copy, not three fragments.
+	const recorderStateRef = useRef(createMotorRecorderState());
 
 	const reviewRef = useRef<ReviewState | null>(null);
 	useEffect(() => {
@@ -97,6 +101,7 @@ function TestMotor({ patientView = false }: TestMotorProps) {
 					totalTests={MOTOR_TESTS.length}
 					handModel={handModel}
 					statusWindowRef={statusWindowRef}
+					recorderStateRef={recorderStateRef}
 					patientView={patientView}
 					onRecorded={handleRecorded}
 				/>

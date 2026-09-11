@@ -13,6 +13,10 @@ import { HAND_ALIGNMENT_RADIANS } from "./motorConfig";
 interface Props {
 	evaluation: HandFrameEvaluation | null;
 	reported: MotorIssueCode;
+	/** Highest anchor score before thresholding - see HandDetectionResult.maxScore. */
+	maxScore: number;
+	aboveThresholdCount: number;
+	scoreThreshold: number;
 	backend: HandModelBackend;
 	modelReady: boolean;
 	tickHz: number;
@@ -24,7 +28,7 @@ function degrees(radians: number): string {
 	return `${((radians * 180) / Math.PI).toFixed(0)}deg`;
 }
 
-function MotorHandHud({ evaluation, reported, backend, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
+function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, scoreThreshold, backend, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
 	return (
 		<div className={embedded ? "mhh-embedded" : "mhh-root"}>
 			<style>{CSS}</style>
@@ -36,6 +40,16 @@ function MotorHandHud({ evaluation, reported, backend, modelReady, tickHz, infer
 			<div className="mhh-row">
 				<span>tick</span>
 				<span>{tickHz.toFixed(1)} Hz / infer {inferenceMs.toFixed(0)} ms</span>
+			</div>
+			<div className="mhh-row mhh-row--strong">
+				<span>max score</span>
+				<span className={maxScore >= scoreThreshold ? "mhh-ok" : "mhh-bad"}>
+					{maxScore.toFixed(3)} / thr {scoreThreshold.toFixed(2)}
+				</span>
+			</div>
+			<div className="mhh-row">
+				<span>over thr</span>
+				<span>{aboveThresholdCount} anchors</span>
 			</div>
 			<div className="mhh-row">
 				<span>raw</span>
