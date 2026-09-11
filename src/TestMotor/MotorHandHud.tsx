@@ -7,18 +7,16 @@
 // motorConfig.ts are all UNCALIBRATED - the point of this panel is to replace guesses
 // with values read off a phone.
 import type { HandFrameEvaluation, MotorIssueCode } from "./handStatus";
-import type { HandModelBackend } from "./handModel";
-import { HAND_ALIGNMENT_RADIANS } from "./motorConfig";
+import {
+	FINGER_EXTENSION_MIN,
+	FINGER_SEPARATION_MIN,
+	HAND_ALIGNMENT_RADIANS,
+	PALM_FACING_MIN_SCORE,
+} from "./motorConfig";
 
 interface Props {
 	evaluation: HandFrameEvaluation | null;
 	reported: MotorIssueCode;
-	/** Highest anchor score before thresholding - see HandDetectionResult.maxScore. */
-	maxScore: number;
-	aboveThresholdCount: number;
-	scoreThreshold: number;
-	regionMode: string;
-	backend: HandModelBackend;
 	modelReady: boolean;
 	tickHz: number;
 	inferenceMs: number;
@@ -29,32 +27,18 @@ function degrees(radians: number): string {
 	return `${((radians * 180) / Math.PI).toFixed(0)}deg`;
 }
 
-function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, scoreThreshold, regionMode, backend, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
+function MotorHandHud({ evaluation, reported, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
 	return (
 		<div className={embedded ? "mhh-embedded" : "mhh-root"}>
 			<style>{CSS}</style>
 			<div className="mhh-title">HANDS</div>
 			<div className="mhh-row">
 				<span>model</span>
-				<span>{modelReady ? backend ?? "ready" : "loading"}</span>
-			</div>
-			<div className="mhh-row">
-				<span>crop</span>
-				<span>{regionMode}</span>
+				<span>{modelReady ? "mediapipe" : "loading"}</span>
 			</div>
 			<div className="mhh-row">
 				<span>tick</span>
 				<span>{tickHz.toFixed(1)} Hz / infer {inferenceMs.toFixed(0)} ms</span>
-			</div>
-			<div className="mhh-row mhh-row--strong">
-				<span>max score</span>
-				<span className={maxScore >= scoreThreshold ? "mhh-ok" : "mhh-bad"}>
-					{maxScore.toFixed(3)} / thr {scoreThreshold.toFixed(2)}
-				</span>
-			</div>
-			<div className="mhh-row">
-				<span>over thr</span>
-				<span>{aboveThresholdCount} anchors</span>
 			</div>
 			<div className="mhh-row">
 				<span>raw</span>
@@ -76,23 +60,43 @@ function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, sco
 				<div className="mhh-hand" key={index}>
 					<div className="mhh-row mhh-row--strong">
 						<span>{hand.side} hand</span>
-						<span>score {hand.score.toFixed(2)}</span>
+						<span className={hand.sidesAgree ? "mhh-ok" : "mhh-bad"}>
+							mp:{hand.handednessSide}
+						</span>
 					</div>
 					<div className="mhh-row">
 						<span>pos</span>
 						<span>{hand.x.toFixed(0)}, {hand.y.toFixed(0)}</span>
 					</div>
 					<div className="mhh-row">
-						<span>angle</span>
-						<span className={hand.aligned ? "mhh-ok" : "mhh-bad"}>{degrees(hand.radians)}</span>
+						<span>in box / frame</span>
+						<span>
+							<span className={hand.insideGuide ? "mhh-ok" : "mhh-bad"}>{hand.insideGuide ? "in" : "out"}</span>
+							{" / "}
+							<span className={hand.fullyInFrame ? "mhh-ok" : "mhh-bad"}>{hand.fullyInFrame ? "whole" : "clipped"}</span>
+						</span>
 					</div>
 					<div className="mhh-row">
-						<span>in box</span>
-						<span className={hand.insideGuide ? "mhh-ok" : "mhh-bad"}>{hand.insideGuide ? "yes" : "no"}</span>
+						<span>palm facing</span>
+						<span className={hand.palmFacing ? "mhh-ok" : "mhh-bad"}>
+							{hand.palmFacingScore.toFixed(3)} / {PALM_FACING_MIN_SCORE}
+						</span>
 					</div>
 					<div className="mhh-row">
-						<span>in frame</span>
-						<span className={hand.fullyInFrame ? "mhh-ok" : "mhh-bad"}>{hand.fullyInFrame ? "whole" : "clipped"}</span>
+						<span>extension</span>
+						<span className={hand.minFingerExtension >= FINGER_EXTENSION_MIN ? "mhh-ok" : "mhh-bad"}>
+							{hand.minFingerExtension.toFixed(2)} / {FINGER_EXTENSION_MIN}
+						</span>
+					</div>
+					<div className="mhh-row">
+						<span>separation</span>
+						<span className={hand.minFingerSeparation >= FINGER_SEPARATION_MIN ? "mhh-ok" : "mhh-bad"}>
+							{hand.minFingerSeparation.toFixed(3)} / {FINGER_SEPARATION_MIN}
+						</span>
+					</div>
+					<div className="mhh-row">
+						<span>pointing</span>
+						<span className={hand.upright ? "mhh-ok" : "mhh-bad"}>{degrees(hand.pointingRadians)}</span>
 					</div>
 				</div>
 			))}

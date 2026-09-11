@@ -6,296 +6,143 @@ import {
 	pushHandStatus,
 	resetHandStatusWindow,
 } from "../../src/TestMotor/handStatus";
-import type { HandDetection, HandPoint } from "../../src/TestMotor/handModel";
-import { HAND_ALIGNMENT_RADIANS, HAND_GUIDE_BOX, MIRROR_PREVIEW, STATUS_WINDOW_TICKS } from "../../src/TestMotor/motorConfig";
+import { HAND_GUIDE_BOX, MIRROR_PREVIEW, STATUS_WINDOW_TICKS } from "../../src/TestMotor/motorConfig";
+import { landmarkedHand } from "./handFixtures";
+import type { HandOptions } from "./handFixtures";
 
-const FRAME_W = 800;
-const FRAME_H = 450;
+const FRAME_W = 1620;
+const FRAME_H = 911;
+
+const BOX = guideBoxPixels(FRAME_W, FRAME_H);
+const SPAN = BOX.maxX - BOX.minX;
+const MID_Y = (BOX.minY + BOX.maxY) / 2;
 
 /**
- * Builds a detection whose landmark[2] sits at `radians` from the centre, because that
- * is the vector handOrientation() measures. Positions are given in DISPLAY space and
- * converted back to sensor space, so a test can say where a hand appears on screen
- * without restating the mirror maths under test.
+ * Places a hand so it LANDS at `displayX` after evaluateHandFrame's mirror, and gives it
+ * the handedness MediaPipe would report for the patient's hand on that side.
  */
-function detectionAt(displayX: number, displayY: number, radians: number, score = 0.9, half = 30): HandDetection {
-	const sensorX = MIRROR_PREVIEW ? FRAME_W - displayX : displayX;
-	// Mirroring reflects the angle about the vertical axis; undo that to get the sensor-space angle.
-	const sensorRadians = MIRROR_PREVIEW ? Math.atan2(Math.sin(radians), -Math.cos(radians)) : radians;
-	const reach = 40;
-	const landmarks: HandPoint[] = Array.from({ length: 7 }, () => ({ x: sensorX, y: displayY }));
-	landmarks[2] = {
-		x: sensorX + reach * Math.cos(sensorRadians),
-		y: displayY + reach * Math.sin(sensorRadians),
-	};
-	return {
-		bbox: [sensorX - half, displayY - half, sensorX + half, displayY + half],
-		score,
-		landmarks,
-		x: sensorX,
-		y: displayY,
-	};
+function handAt(displayX: number, displayY = MID_Y, options: HandOptions = {}) {
+	const side = (displayX < (BOX.minX + BOX.maxX) / 2) === MIRROR_PREVIEW ? "left" : "right";
+	return landmarkedHand({
+		...options,
+		side,
+		frameWidth: FRAME_W,
+		// The palm centre sits above the wrist, so the wrist is placed below the target.
+		at: { x: displayX, y: displayY + 55 },
+	});
 }
 
-const UPRIGHT = -Math.PI / 2;
+const PATIENT_LEFT_X = BOX.minX + SPAN * 0.25;
+const PATIENT_RIGHT_X = BOX.minX + SPAN * 0.75;
 
-function insideCentre(): { x: number; y: number } {
-	const box = guideBoxPixels(FRAME_W, FRAME_H);
-	return { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
+function evaluate(hands: ReturnType<typeof handAt>[]) {
+	return evaluateHandFrame(hands, FRAME_W, FRAME_H);
 }
 
 describe("evaluateHandFrame", () => {
+	it("reports HANDS_READY for two open palms inside the guide", () => {
+		const result = evaluate([handAt(PATIENT_LEFT_X), handAt(PATIENT_RIGHT_X)]);
+		expect(result.code).toBe("HANDS_READY");
+		expect(new Set(result.hands.map((hand) => hand.side))).toEqual(new Set(["left", "right"]));
+	});
+
 	it("reports BOTH_HANDS_MISSING for an empty frame", () => {
-		expect(evaluateHandFrame([], FRAME_W, FRAME_H).code).toBe("BOTH_HANDS_MISSING");
+		expect(evaluate([]).code).toBe("BOTH_HANDS_MISSING");
 	});
 
 	it("names the missing hand when only the other one is up", () => {
-		const { y } = insideCentre();
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const leftOfScreen = box.minX + (box.maxX - box.minX) * 0.25;
-		const rightOfScreen = box.minX + (box.maxX - box.minX) * 0.75;
-
-		// The preview is mirrored, so a hand on the LEFT of the screen is the patient's own
-		// left hand - which means the RIGHT one is the one they need to raise.
-		const onlyScreenLeft = evaluateHandFrame([detectionAt(leftOfScreen, y, UPRIGHT)], FRAME_W, FRAME_H);
-		expect(onlyScreenLeft.hands[0].side).toBe(MIRROR_PREVIEW ? "left" : "right");
-		expect(onlyScreenLeft.code).toBe(MIRROR_PREVIEW ? "RIGHT_HAND_MISSING" : "LEFT_HAND_MISSING");
-
-		const onlyScreenRight = evaluateHandFrame([detectionAt(rightOfScreen, y, UPRIGHT)], FRAME_W, FRAME_H);
-		expect(onlyScreenRight.hands[0].side).toBe(MIRROR_PREVIEW ? "right" : "left");
-		expect(onlyScreenRight.code).toBe(MIRROR_PREVIEW ? "LEFT_HAND_MISSING" : "RIGHT_HAND_MISSING");
+		expect(evaluate([handAt(PATIENT_LEFT_X)]).code).toBe("RIGHT_HAND_MISSING");
+		expect(evaluate([handAt(PATIENT_RIGHT_X)]).code).toBe("LEFT_HAND_MISSING");
 	});
 
-	it("counts a detected but badly placed hand as present, not missing", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const leftOfScreen = box.minX + (box.maxX - box.minX) * 0.25;
-		const rightOfScreen = box.minX + (box.maxX - box.minX) * 0.75;
-		// One hand per side, but both well above the box.
-		const result = evaluateHandFrame(
-			[detectionAt(leftOfScreen, box.minY - 60, UPRIGHT), detectionAt(rightOfScreen, box.minY - 60, UPRIGHT)],
-			FRAME_W,
-			FRAME_H
+	it("reports TOO_MANY_HANDS when both land on the same side", () => {
+		expect(evaluate([handAt(BOX.minX + SPAN * 0.2), handAt(BOX.minX + SPAN * 0.3)]).code).toBe("TOO_MANY_HANDS");
+	});
+
+	it("names the hand whose palm is turned away", () => {
+		expect(evaluate([handAt(PATIENT_LEFT_X, MID_Y, { palmAway: true }), handAt(PATIENT_RIGHT_X)]).code).toBe(
+			"LEFT_PALM_NOT_FACING_CAMERA"
 		);
-		expect(result.code).toBe("BOTH_HANDS_OUTSIDE_GUIDE");
-	});
-
-	it("reports TOO_MANY_HANDS when both palms land on the same side", () => {
-		const { y } = insideCentre();
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const a = box.minX + (box.maxX - box.minX) * 0.2;
-		const b = box.minX + (box.maxX - box.minX) * 0.3;
-		const result = evaluateHandFrame([detectionAt(a, y, UPRIGHT), detectionAt(b, y, UPRIGHT)], FRAME_W, FRAME_H);
-		expect(result.code).toBe("TOO_MANY_HANDS");
-	});
-
-	it("reports TOO_MANY_HANDS when a third palm appears", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const hands = [
-			detectionAt(box.minX + (box.maxX - box.minX) * 0.2, y, UPRIGHT),
-			detectionAt(box.minX + (box.maxX - box.minX) * 0.3, y, UPRIGHT),
-			detectionAt(box.minX + (box.maxX - box.minX) * 0.8, y, UPRIGHT),
-		];
-		expect(evaluateHandFrame(hands, FRAME_W, FRAME_H).code).toBe("TOO_MANY_HANDS");
-	});
-
-	it("assigns one side per hand for a correct two-hand frame", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const result = evaluateHandFrame(
-			[
-				detectionAt(box.minX + (box.maxX - box.minX) * 0.25, y, UPRIGHT),
-				detectionAt(box.minX + (box.maxX - box.minX) * 0.75, y, UPRIGHT),
-			],
-			FRAME_W,
-			FRAME_H
+		expect(evaluate([handAt(PATIENT_LEFT_X), handAt(PATIENT_RIGHT_X, MID_Y, { palmAway: true })]).code).toBe(
+			"RIGHT_PALM_NOT_FACING_CAMERA"
 		);
-		expect(new Set(result.hands.map((hand) => hand.side))).toEqual(new Set(["left", "right"]));
-		expect(result.code).toBe("HANDS_READY");
+		expect(
+			evaluate([handAt(PATIENT_LEFT_X, MID_Y, { palmAway: true }), handAt(PATIENT_RIGHT_X, MID_Y, { palmAway: true })]).code
+		).toBe("BOTH_PALMS_NOT_FACING_CAMERA");
 	});
 
-	it("splits sides on the guide box centre, not the frame centre", () => {
-		// Only meaningful while the box is not frame-centred; asserts the derivation rather
-		// than the current numbers.
-		const boxCenterNorm = HAND_GUIDE_BOX.x + HAND_GUIDE_BOX.width / 2;
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		expect((box.minX + box.maxX) / 2).toBeCloseTo(boxCenterNorm * FRAME_W, 5);
-	});
-
-	it("reports HANDS_READY when both palms are inside the guide and upright", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-		const result = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, y, UPRIGHT), detectionAt(box.minX + span * 0.75, y, UPRIGHT)],
-			FRAME_W,
-			FRAME_H
+	it("names the hand that is not open, whether curled or pinched", () => {
+		expect(evaluate([handAt(PATIENT_LEFT_X, MID_Y, { curl: 0.8 }), handAt(PATIENT_RIGHT_X)]).code).toBe(
+			"LEFT_HAND_NOT_OPEN"
 		);
-		expect(result.code).toBe("HANDS_READY");
-		expect(result.hands.every((hand) => hand.insideGuide && hand.aligned)).toBe(true);
+		expect(evaluate([handAt(PATIENT_LEFT_X), handAt(PATIENT_RIGHT_X, MID_Y, { pinch: 1 })]).code).toBe(
+			"RIGHT_HAND_NOT_OPEN"
+		);
+		expect(
+			evaluate([handAt(PATIENT_LEFT_X, MID_Y, { curl: 0.8 }), handAt(PATIENT_RIGHT_X, MID_Y, { curl: 0.8 })]).code
+		).toBe("BOTH_HANDS_NOT_OPEN");
 	});
 
-	it("names the clipped hand when a palm box runs off the frame edge", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-		const ok = detectionAt(box.minX + span * 0.25, y, UPRIGHT);
-		// Centre still inside the guide, but the box overhangs the right edge of the frame.
-		const clipped = detectionAt(FRAME_W - 10, y, UPRIGHT, 0.9, 60);
+	it("names the hand that is not pointing up", () => {
+		expect(evaluate([handAt(PATIENT_LEFT_X, MID_Y, { rotation: 1.4 }), handAt(PATIENT_RIGHT_X)]).code).toBe(
+			"LEFT_HAND_NOT_UPRIGHT"
+		);
+	});
 
-		const result = evaluateHandFrame([ok, clipped], FRAME_W, FRAME_H);
+	it("reports a palm turned away before it reports the hand closed", () => {
+		// A hand seen from the back reads as closed whether or not it is, so the facing
+		// instruction has to come first or the patient is told to fix the wrong thing.
+		const result = evaluate([handAt(PATIENT_LEFT_X, MID_Y, { palmAway: true, curl: 0.8 }), handAt(PATIENT_RIGHT_X)]);
+		expect(result.code).toBe("LEFT_PALM_NOT_FACING_CAMERA");
+	});
+
+	it("names the hand outside the guide box", () => {
+		expect(evaluate([handAt(PATIENT_LEFT_X, BOX.minY - 120), handAt(PATIENT_RIGHT_X)]).code).toBe(
+			"LEFT_HAND_OUTSIDE_GUIDE"
+		);
+	});
+
+	it("reports a clipped hand ahead of a guide-box miss", () => {
+		const clipped = evaluate([handAt(FRAME_W - 5, MID_Y), handAt(PATIENT_LEFT_X)]);
+		expect(clipped.code).toMatch(/NOT_FULLY_IN_FRAME$/);
+	});
+
+	it("catches fingertips clipped at the top while the palm is fully visible", () => {
+		// The palm-box version could not see this: the palm sits well inside the frame and
+		// only the extended fingers cross the edge.
+		const result = evaluate([handAt(PATIENT_LEFT_X, 150), handAt(PATIENT_RIGHT_X)]);
 		const clippedHand = result.hands.find((hand) => !hand.fullyInFrame);
 		expect(clippedHand).toBeDefined();
-		expect(result.code).toBe(
-			clippedHand!.side === "left" ? "LEFT_HAND_NOT_FULLY_IN_FRAME" : "RIGHT_HAND_NOT_FULLY_IN_FRAME"
-		);
+		expect(clippedHand!.y).toBeGreaterThan(0);
 	});
 
-	it("says 'both' only when neither hand is right", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-
-		const bothClipped = evaluateHandFrame(
-			[detectionAt(10, y, UPRIGHT, 0.9, 60), detectionAt(FRAME_W - 10, y, UPRIGHT, 0.9, 60)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(bothClipped.code).toBe("BOTH_HANDS_NOT_FULLY_IN_FRAME");
-
-		const aboveBox = box.minY - 40;
-		const bothOutside = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, aboveBox, UPRIGHT), detectionAt(box.minX + span * 0.75, aboveBox, UPRIGHT)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(bothOutside.code).toBe("BOTH_HANDS_OUTSIDE_GUIDE");
-
-		const sideways = HAND_ALIGNMENT_RADIANS.max + 0.5;
-		const bothTurned = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, y, sideways), detectionAt(box.minX + span * 0.75, y, sideways)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(bothTurned.code).toBe("BOTH_HANDS_MISALIGNED");
+	it("keeps MediaPipe handedness as a cross-check, not as the answer", () => {
+		// Guide half says left; handedness is deliberately fed the wrong way round.
+		const [hand] = evaluate([landmarkedHand({
+			side: "left",
+			frameWidth: FRAME_W,
+			at: { x: PATIENT_LEFT_X, y: MID_Y + 55 },
+			rawHandedness: "Left",
+		})]).hands;
+		expect(hand.side).toBe("left");
+		expect(hand.handednessSide).toBe("right");
+		expect(hand.sidesAgree).toBe(false);
 	});
 
-	it("names only the failing hand when the other one is correct", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-		const screenLeftGood = detectionAt(box.minX + span * 0.25, y, UPRIGHT);
-		const screenRightGood = detectionAt(box.minX + span * 0.75, y, UPRIGHT);
-		// Mirrored preview: screen-left is the patient's left hand.
-		const screenLeftSide = MIRROR_PREVIEW ? "LEFT" : "RIGHT";
-		const screenRightSide = MIRROR_PREVIEW ? "RIGHT" : "LEFT";
-
-		const leftOutside = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, box.minY - 40, UPRIGHT), screenRightGood],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(leftOutside.code).toBe(`${screenLeftSide}_HAND_OUTSIDE_GUIDE`);
-
-		const sideways = HAND_ALIGNMENT_RADIANS.max + 0.5;
-		const rightTurned = evaluateHandFrame(
-			[screenLeftGood, detectionAt(box.minX + span * 0.75, y, sideways)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(rightTurned.code).toBe(`${screenRightSide}_HAND_MISALIGNED`);
+	it("agrees with handedness for a normally placed hand", () => {
+		const [hand] = evaluate([handAt(PATIENT_LEFT_X)]).hands;
+		expect(hand.sidesAgree).toBe(true);
 	});
 
-	it("treats a clipped hand as present rather than missing", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-		const result = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, y, UPRIGHT), detectionAt(FRAME_W - 10, y, UPRIGHT, 0.9, 60)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(result.code).not.toBe("LEFT_HAND_MISSING");
-		expect(result.code).not.toBe("RIGHT_HAND_MISSING");
-		expect(result.code).not.toBe("BOTH_HANDS_MISSING");
-	});
-
-	it("reports clipping ahead of a guide-box miss, since it is the more specific fix", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const span = box.maxX - box.minX;
-		// Both hands outside the box vertically; one of them also clipped by the frame.
-		const aboveBox = box.minY - 40;
-		const result = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, aboveBox, UPRIGHT), detectionAt(FRAME_W - 10, aboveBox, UPRIGHT, 0.9, 60)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(result.code).toMatch(/NOT_FULLY_IN_FRAME$/);
-	});
-
-	it("counts a hand well inside the frame as whole", () => {
-		const { x, y } = insideCentre();
-		const [hand] = evaluateHandFrame([detectionAt(x, y, UPRIGHT)], FRAME_W, FRAME_H).hands;
-		expect(hand.fullyInFrame).toBe(true);
-	});
-
-	it("reports HANDS_OUTSIDE_GUIDE when one palm leaves the box", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-		const inside = detectionAt(box.minX + span * 0.25, y, UPRIGHT);
-		const outside = detectionAt(box.minX + span * 0.75, box.minY - 40, UPRIGHT);
-		expect(evaluateHandFrame([inside, outside], FRAME_W, FRAME_H).code).toMatch(/_HAND_OUTSIDE_GUIDE$/);
-	});
-
-	it("reports HANDS_MISALIGNED when both are in the box but turned away", () => {
-		const box = guideBoxPixels(FRAME_W, FRAME_H);
-		const { y } = insideCentre();
-		const span = box.maxX - box.minX;
-		const sideways = HAND_ALIGNMENT_RADIANS.max + 0.5;
-		const result = evaluateHandFrame(
-			[detectionAt(box.minX + span * 0.25, y, sideways), detectionAt(box.minX + span * 0.75, y, sideways)],
-			FRAME_W,
-			FRAME_H
-		);
-		expect(result.code).toBe("BOTH_HANDS_MISALIGNED");
-		expect(result.hands.every((hand) => hand.insideGuide)).toBe(true);
-	});
-
-	it("reflects the orientation angle, so a palm leaning right on the sensor leans left on screen", () => {
-		// Built in sensor space directly, bypassing detectionAt's display-space helper, so
-		// this pins the reflection rather than restating it.
-		const upAndRight = -Math.PI / 4;
-		const reach = 40;
-		const landmarks: HandPoint[] = Array.from({ length: 7 }, () => ({ x: 400, y: 300 }));
-		landmarks[2] = { x: 400 + reach * Math.cos(upAndRight), y: 300 + reach * Math.sin(upAndRight) };
-		const sensorHand: HandDetection = {
-			bbox: [370, 270, 430, 330],
-			score: 0.9,
-			landmarks,
-			x: 400,
-			y: 300,
-		};
-
-		const [hand] = evaluateHandFrame([sensorHand], FRAME_W, FRAME_H).hands;
-		expect(hand.radians).toBeCloseTo(MIRROR_PREVIEW ? -Math.PI + Math.PI / 4 : upAndRight, 5);
-		// Still leaning up (negative y component) either way - mirroring must not flip vertical.
-		expect(Math.sin(hand.radians)).toBeLessThan(0);
-	});
-
-	it("mirrors positions into display space so the guide box and the hands agree", () => {
-		const { x, y } = insideCentre();
-		const [hand] = evaluateHandFrame([detectionAt(x, y, UPRIGHT)], FRAME_W, FRAME_H).hands;
-		expect(hand.x).toBeCloseTo(x, 5);
-		// bbox x1 stays the left edge after the flip.
-		expect(hand.bbox[0]).toBeLessThan(hand.bbox[2]);
+	it("splits sides on the guide box centre", () => {
+		const boxCenterNorm = HAND_GUIDE_BOX.x + HAND_GUIDE_BOX.width / 2;
+		expect((BOX.minX + BOX.maxX) / 2).toBeCloseTo(boxCenterNorm * FRAME_W, 5);
 	});
 });
 
 describe("pushHandStatus", () => {
-	it("holds PENDING until one code dominates the window", () => {
+	it("commits the first sample, which is all of the window so far", () => {
 		const window = createHandStatusWindow(STATUS_WINDOW_TICKS);
-		// A single sample is trivially 100% of the window, so the first tick already commits.
 		expect(pushHandStatus(window, "HANDS_READY")).toBe("HANDS_READY");
 	});
 

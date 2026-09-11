@@ -15,9 +15,7 @@ import MotorGuidanceBanner from "./MotorGuidanceBanner";
 import MotorHandHud from "./MotorHandHud";
 import MotorRecorderPanel from "./MotorRecorderPanel";
 import DebugHudStack from "../CaptureQualityHud/DebugHudStack";
-import { detectHands, groupDetections, letterboxParams, offsetDetections, HAND_MODEL_INPUT_SIZE } from "./handModel";
-import type { HandDetection } from "./handModel";
-import { detectionRegions, regionModeFromUrl } from "./detectionRegions";
+import { detectHands } from "./handLandmarker";
 import { recordMotorTick } from "./motorRecorder";
 import type { MotorRecorderState } from "./motorRecorder";
 import { evaluateHandFrame, pushHandStatus } from "./handStatus";
@@ -74,7 +72,6 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 	const webcamRef = useRef<Webcam>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const overlayRef = useRef<HTMLCanvasElement>(null);
-	const hiddenRef = useRef<HTMLCanvasElement>(null);
 	const rafRef = useRef<number | null>(null);
 	const lastTickAtRef = useRef(0);
 	const tickRef = useRef(0);
@@ -92,8 +89,7 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 
 	const [status, setStatus] = useState<MotorIssueCode>("PENDING");
 	const [evaluation, setEvaluation] = useState<HandFrameEvaluation | null>(null);
-	const [detectorStats, setDetectorStats] = useState({ maxScore: 0, aboveThresholdCount: 0 });
-	const regionModeRef = useRef(regionModeFromUrl());
+
 
 	const [isRecording, setIsRecording] = useState(false);
 	const isRecordingRef = useRef(false);
@@ -241,79 +237,28 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 			const model = handModelRef.current.model;
 			const video = webcamRef.current?.video;
 			const overlay = overlayRef.current;
-			const hidden = hiddenRef.current;
 			const { width: frameWidth, height: frameHeight } = videoDimensions;
 
 			const runChecks = RUN_CHECKS_WHILE_RECORDING || !isRecordingRef.current;
-			if (model && video && video.readyState === 4 && overlay && hidden && frameWidth > 0 && runChecks) {
-				// Sized explicitly. Website left both canvases at the default 300x150 while
-				// feeding them displayed-pixel coordinates, so the model saw a clipped frame
-				// and the overlay drew into the wrong space.
-				hidden.width = HAND_MODEL_INPUT_SIZE;
-				hidden.height = HAND_MODEL_INPUT_SIZE;
-
-				const hiddenCtx = hidden.getContext("2d", { willReadFrequently: true });
+			if (model && video && video.readyState === 4 && overlay && frameWidth > 0 && runChecks) {
 				const overlayCtx = overlay.getContext("2d");
-				if (hiddenCtx && overlayCtx) {
-					// One inference per region (see detectionRegions.ts). Each result comes back
-					// in its own crop's pixel space and is shifted into the frame's before the
-					// regions are merged, so everything downstream still sees one flat list in
-					// one coordinate system.
-					const regions = detectionRegions(frameWidth, frameHeight, regionModeRef.current);
+				if (overlayCtx) {
+					// MediaPipe's VIDEO mode rejects a timestamp that does not strictly
+					// increase, and throws rather than returning empty - which would take the
+					// whole loop down. `now` is performance.now() and monotonic.
 					const inferenceStartedAt = performance.now();
-					let merged: HandDetection[] = [];
-					let maxScore = 0;
-					let aboveThresholdCount = 0;
-					let threw = false;
-
-					// Regions are computed in DISPLAYED pixels, because that is the space the
-					// guide box, the overlay and the check all live in - but drawImage samples
-					// the video's own intrinsic pixels, which are a different size. Scaling only
-					// the source rect keeps every downstream coordinate in displayed space.
-					const sourceScale = video.videoWidth / frameWidth;
-
-					for (const region of regions) {
-						const { ratio, padW, padH } = letterboxParams(region.sw, region.sh);
-						hiddenCtx.clearRect(0, 0, HAND_MODEL_INPUT_SIZE, HAND_MODEL_INPUT_SIZE);
-						hiddenCtx.drawImage(
-							video,
-							region.sx * sourceScale,
-							region.sy * sourceScale,
-							region.sw * sourceScale,
-							region.sh * sourceScale,
-							padW,
-							padH,
-							region.sw * ratio,
-							region.sh * ratio
-						);
-						const imageData = hiddenCtx.getImageData(0, 0, HAND_MODEL_INPUT_SIZE, HAND_MODEL_INPUT_SIZE);
-						const regionResult = await detectHands(model, imageData, region.sw, region.sh);
-						if (!regionResult) {
-							threw = true;
-							break;
-						}
-						merged = merged.concat(offsetDetections(regionResult.detections, region.sx, region.sy));
-						maxScore = Math.max(maxScore, regionResult.maxScore);
-						aboveThresholdCount += regionResult.aboveThresholdCount;
-					}
-
+					const detected = detectHands(model, video, now, frameWidth, frameHeight);
 					inferenceMsRef.current = performance.now() - inferenceStartedAt;
-					const result = threw ? null : { detections: groupDetections(merged), maxScore, aboveThresholdCount };
 
 					// null means the pass threw, which is not the same as finding no hands -
-					// leave the last answer standing rather than reporting NO_HANDS_DETECTED.
-					if (result && !cancelled) {
-						const frameEvaluation = evaluateHandFrame(result.detections, frameWidth, frameHeight);
+					// leave the last answer standing rather than reporting BOTH_HANDS_MISSING.
+					if (detected && !cancelled) {
+						const frameEvaluation = evaluateHandFrame(detected, frameWidth, frameHeight);
 						const reported = pushHandStatus(statusWindowRef.current, frameEvaluation.code);
 						drawHandOverlay(overlayCtx, frameEvaluation.hands, frameWidth, frameHeight, debugVisible);
 
-						recorderStateRef.current.backend = model.backend ?? "-";
-						recorderStateRef.current.scoreThreshold = model.scoreThreshold;
-						recorderStateRef.current.regionMode = regionModeRef.current;
+						recorderStateRef.current.backend = "mediapipe-gpu";
 						recordMotorTick(recorderStateRef.current, {
-							maxScore: result.maxScore,
-							aboveThresholdCount: result.aboveThresholdCount,
-							groupedCount: result.detections.length,
 							code: frameEvaluation.code,
 							hands: frameEvaluation.hands,
 							frameWidth,
@@ -326,7 +271,6 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 						if (tickRef.current % HUD_UPDATE_EVERY_N_TICKS === 0) {
 							setEvaluation(frameEvaluation);
 							setStatus(reported);
-							setDetectorStats({ maxScore: result.maxScore, aboveThresholdCount: result.aboveThresholdCount });
 						}
 					}
 				}
@@ -544,7 +488,6 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 					setCameraReady(false);
 				}}
 			/>
-			<canvas ref={hiddenRef} style={{ display: "none" }} />
 
 			{cameraReady && videoDimensions.width > 0 && showSetupUi && (
 				<MotorTrackingGraphic hex={guideColor} style={{ ...overlayBox, zIndex: 50 }} />
@@ -576,11 +519,6 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 					<MotorHandHud
 						evaluation={evaluation}
 						reported={status}
-						maxScore={detectorStats.maxScore}
-						aboveThresholdCount={detectorStats.aboveThresholdCount}
-						scoreThreshold={handModel.model?.scoreThreshold ?? 0}
-						regionMode={regionModeRef.current}
-						backend={handModel.backend}
 						modelReady={checkAvailable}
 						tickHz={tickHzRef.current}
 						inferenceMs={inferenceMsRef.current}

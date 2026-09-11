@@ -13,30 +13,32 @@ import type { EvaluatedHand } from "../../src/TestMotor/handStatus";
 
 function hand(overrides: Partial<EvaluatedHand> = {}): EvaluatedHand {
 	return {
+		side: "left",
+		handednessSide: "left",
+		sidesAgree: true,
 		x: 400,
 		y: 300,
-		bbox: [370, 270, 430, 330],
 		landmarks: [],
-		side: "left",
-		score: 0.9,
-		radians: -Math.PI / 2,
+		pointingRadians: -Math.PI / 2,
+		palmFacingScore: 0.42,
+		minFingerExtension: 0.96,
+		minFingerSeparation: 0.34,
 		insideGuide: true,
-		aligned: true,
 		fullyInFrame: true,
+		palmFacing: true,
+		open: true,
+		upright: true,
 		...overrides,
 	};
 }
 
 function sample(overrides: Partial<MotorRecorderSample> = {}): MotorRecorderSample {
 	return {
-		maxScore: 0.92,
-		aboveThresholdCount: 5,
-		groupedCount: 2,
 		code: "HANDS_READY",
-		hands: [hand(), hand({ x: 500, side: "right" })],
+		hands: [hand(), hand({ x: 500, side: "right", handednessSide: "right" })],
 		frameWidth: 800,
 		frameHeight: 450,
-		inferenceMs: 40,
+		inferenceMs: 12,
 		tickHz: 15,
 		...overrides,
 	};
@@ -62,41 +64,43 @@ describe("motorRecorder", () => {
 	it("halves the buffer and doubles the stride instead of dropping the start of a take", () => {
 		const state = createMotorRecorderState();
 		startMotorRecording(state, 0);
-		for (let i = 0; i < 700; i++) recordMotorTick(state, sample({ maxScore: i / 1000 }));
+		for (let i = 0; i < 700; i++) recordMotorTick(state, sample({ tickHz: i }));
 		expect(state.samples.length).toBeLessThanOrEqual(300);
 		expect(state.stride).toBeGreaterThan(1);
 		// The first sample of the take survives the halving.
-		expect(state.samples[0].maxScore).toBe(0);
+		expect(state.samples[0].tickHz).toBe(0);
 	});
 
-	it("encodes the max score, counts and hands in the export", () => {
+	it("encodes the verdict and the raw geometry behind it", () => {
 		const state = createMotorRecorderState();
 		state.scenarioTag = "hands in box";
-		state.backend = "wasm";
-		state.scoreThreshold = 0.65;
+		state.backend = "mediapipe-gpu";
 		startMotorRecording(state, 0);
 		recordMotorTick(state, sample());
 
 		const line = buildCompactExport(state);
-		expect(line.startsWith("MH3|hands in box|n=1|")).toBe(true);
-		expect(line).toContain("be=wasm");
-		expect(line).toContain("crop=-");
-		expect(line).toContain("thr=650");
+		expect(line.startsWith("MH4|hands in box|n=1|")).toBe(true);
+		expect(line).toContain("be=mediapipe-gpu");
 		expect(line).toContain("res=800x450");
+
 		// A line carries its own legend, so the index is read against this list rather than
 		// against whatever the code happens to export today.
 		const codes = line.split("|").find((part) => part.startsWith("codes="))!.slice(6).split(",");
 		expect(codes).toContain("HANDS_READY");
-		expect(line).toContain(`920:5:2:${codes.indexOf("HANDS_READY")}:`);
-		// Left hand: flags 11 (inside + aligned + whole). Right hand: 15 (those plus bit2).
-		expect(line).toContain("500,667,-90,11,90/625,667,-90,15,90");
+		expect(line).toContain(`|${codes.indexOf("HANDS_READY")}:`);
+
+		// Left hand: flags 1+2+8+16+32+64 = 123. Right hand adds bit2 = 127.
+		// Geometry: facing 0.42 -> 420, extension 0.96 -> 96, separation 0.34 -> 340.
+		expect(line).toContain("500,667,-90,123,420,96,340/625,667,-90,127,420,96,340");
 	});
 
-	it("records a zero-hand tick without an empty trailing field per hand", () => {
+	it("records whether MediaPipe handedness agreed, so a wrong swap is visible", () => {
 		const state = createMotorRecorderState();
 		startMotorRecording(state, 0);
-		recordMotorTick(state, sample({ hands: [], groupedCount: 0, aboveThresholdCount: 0, maxScore: 0.02, code: "BOTH_HANDS_MISSING" }));
-		expect(buildCompactExport(state)).toContain("20:0:0:0:");
+		recordMotorTick(state, sample({ hands: [hand({ sidesAgree: false, handednessSide: "right" })] }));
+		const encoded = buildCompactExport(state).split("|").pop()!;
+		const flags = Number(encoded.split(":")[1].split(",")[3]);
+		expect(flags & 64).toBe(0);
 	});
 
 	it("stays inside the paste budget", () => {

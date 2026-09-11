@@ -7,50 +7,47 @@
 //
 // Pure (no React) so the encoder is unit-testable without rendering.
 //
-// EXPORT FORMAT (v3, "MH3"):
+// EXPORT FORMAT (v4, "MH4"):
 //
-// v3 makes a line SELF-DESCRIBING: the header now carries the code list that
-// <codeIndex> indexes into. v1->v2 needed a version bump purely because a code was added
-// in the middle and every older line would have silently decoded to the wrong codes; the
-// check list is going to keep growing, so the fix is to ship the legend with the data
-// rather than to renumber the format every time. Costs ~200 chars once per line.
+// v4 drops the palm detector's score fields, which no longer exist, and adds the three
+// geometry measures the landmark model made possible. v3 made a line SELF-DESCRIBING: the
+// header carries the code list that <codeIndex> indexes into, so adding a check no longer
+// silently renumbers older recordings the way v1 -> v2 did. Costs ~250 chars once a line.
 //
-//   MH3|<tag>|n=<count>|stride=<stride>|be=<backend>|crop=<mode>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
+//   MH4|<tag>|n=<count>|stride=<stride>|be=<backend>|res=<W>x<H>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
 //
 // <samples> is `;`-joined, oldest first:
 //
-//   <maxScoreMilli>:<aboveThreshold>:<grouped>:<codeIndex>:<hand>/<hand>
+//   <codeIndex>:<hand>/<hand>
 //
-// <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<scoreCenti>` with position normalized
-// to the frame (so a recording survives a resolution change) and flags as bit0=inside
-// guide, bit1=aligned, bit2=right hand (0=left), bit3=whole palm box inside the frame.
+// <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<facing>,<extension>,<separation>`.
+// Position is normalized to the frame so a recording survives a resolution change; the
+// angle is the wrist -> middle-knuckle direction in degrees. Flags are bit0=inside guide,
+// bit1=upright, bit2=right hand (0=left), bit3=whole hand inside frame, bit4=palm facing,
+// bit5=open, bit6=MediaPipe handedness agrees with which half of the guide the hand is in.
 // The hand list is empty when nothing was detected.
 //
-// maxScoreMilli is the headline field: it is the highest score across EVERY anchor before
-// thresholding, so a recording where it sits near 1000 while `grouped` stays 0 proves the
-// model is seeing hands and the geometry is discarding them, and one where it sits near 0
-// proves the opposite. Recording only post-threshold detections, the way an obvious
-// version of this would, cannot distinguish those two and is exactly how the current
-// UNCALIBRATED thresholds got shipped unexamined.
+// facing/extension/separation are the RAW geometry behind three of those flags, scaled by
+// 1000/100/1000. Recording the raw value beside the verdict is the point: all three
+// thresholds are UNCALIBRATED, and a recording carrying only pass/fail could not be used
+// to fit them. Bit6 is here for the same reason - a wrong SWAP_MEDIAPIPE_HANDEDNESS and a
+// patient crossing their hands look identical live, and only the data tells them apart.
 import { MOTOR_ISSUE_CODES } from "./handStatus";
 import type { EvaluatedHand, MotorIssueCode } from "./handStatus";
 
 // Sized so a FULL buffer still fits MAX_EXPORT_CHARS without hitting the truncation
-// safety net: a two-hand sample encodes to ~44 chars, and 170 of them plus the header
-// lands around 7.6k. Lower than gait's 300 because a motor sample carries two hands of
-// position/angle/score where a marker sample carries five small integers.
-const MAX_SAMPLES = 170;
+// safety net: a two-hand sample now encodes to ~70 chars (three extra geometry measures
+// per hand), and 100 of them plus the header and the codes legend lands around 7.5k.
+const MAX_SAMPLES = 100;
 const MAX_TAG_CHARS = 60;
 export const MAX_EXPORT_CHARS = 8192;
 
-const SCORE_MILLI = 1000;
 const POS_MILLI = 1000;
-const SCORE_CENTI = 100;
+const FACING_MILLI = 1000;
+const EXTENSION_CENTI = 100;
+const SEPARATION_MILLI = 1000;
 
 export interface MotorRecorderSample {
-	maxScore: number;
-	aboveThresholdCount: number;
-	groupedCount: number;
 	code: MotorIssueCode;
 	hands: readonly EvaluatedHand[];
 	frameWidth: number;
@@ -69,10 +66,6 @@ export interface MotorRecorderState {
 	stride: number;
 	tickCounter: number;
 	backend: string;
-	/** Recorded so a replay knows which threshold produced the grouped counts below. */
-	scoreThreshold: number;
-	/** Which framing produced these scores - comparing takes is the whole point. */
-	regionMode: string;
 }
 
 export function createMotorRecorderState(): MotorRecorderState {
@@ -85,8 +78,6 @@ export function createMotorRecorderState(): MotorRecorderState {
 		stride: 1,
 		tickCounter: 0,
 		backend: "-",
-		scoreThreshold: 0,
-		regionMode: "-",
 	};
 }
 
@@ -137,27 +128,26 @@ export function recordMotorTick(state: MotorRecorderState, sample: MotorRecorder
 function encodeHand(hand: EvaluatedHand, frameWidth: number, frameHeight: number): string {
 	const flags =
 		(hand.insideGuide ? 1 : 0) |
-		(hand.aligned ? 2 : 0) |
+		(hand.upright ? 2 : 0) |
 		(hand.side === "right" ? 4 : 0) |
-		(hand.fullyInFrame ? 8 : 0);
+		(hand.fullyInFrame ? 8 : 0) |
+		(hand.palmFacing ? 16 : 0) |
+		(hand.open ? 32 : 0) |
+		(hand.sidesAgree ? 64 : 0);
 	return [
 		Math.round((hand.x / frameWidth) * POS_MILLI),
 		Math.round((hand.y / frameHeight) * POS_MILLI),
-		Math.round((hand.radians * 180) / Math.PI),
+		Math.round((hand.pointingRadians * 180) / Math.PI),
 		flags,
-		Math.round(hand.score * SCORE_CENTI),
+		Math.round(hand.palmFacingScore * FACING_MILLI),
+		Math.round(hand.minFingerExtension * EXTENSION_CENTI),
+		Math.round(hand.minFingerSeparation * SEPARATION_MILLI),
 	].join(",");
 }
 
 function encodeSample(sample: MotorRecorderSample): string {
 	const hands = sample.hands.map((hand) => encodeHand(hand, sample.frameWidth, sample.frameHeight)).join("/");
-	return [
-		Math.round(sample.maxScore * SCORE_MILLI),
-		sample.aboveThresholdCount,
-		sample.groupedCount,
-		MOTOR_ISSUE_CODES.indexOf(sample.code),
-		hands,
-	].join(":");
+	return [MOTOR_ISSUE_CODES.indexOf(sample.code), hands].join(":");
 }
 
 function mean(values: number[]): number {
@@ -171,14 +161,12 @@ export function buildCompactExport(state: MotorRecorderState): string {
 	const tag = state.scenarioTag.slice(0, MAX_TAG_CHARS).replace(/[|;:/]/g, " ").trim();
 
 	const header = [
-		"MH3",
+		"MH4",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
 		`be=${state.backend}`,
-		`crop=${state.regionMode}`,
 		`res=${last ? Math.round(last.frameWidth) : 0}x${last ? Math.round(last.frameHeight) : 0}`,
-		`thr=${Math.round(state.scoreThreshold * SCORE_MILLI)}`,
 		`hz=${mean(samples.map((sample) => sample.tickHz)).toFixed(1)}`,
 		`inf=${Math.round(mean(samples.map((sample) => sample.inferenceMs)))}`,
 		`codes=${MOTOR_ISSUE_CODES.join(",")}`,

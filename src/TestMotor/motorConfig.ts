@@ -2,9 +2,11 @@
 //
 // Every tunable the motor hand check has, in one place. NOTHING HERE IS CALIBRATED.
 // The gait checks earned their numbers by replaying committed recordings (see
-// captureQualityConfig.ts); these are carried over from the values hardcoded in
-// Website's hand_model.ts, where they were arrived at by eye. Treat them as a starting
-// point to iterate against on a phone, not as measured limits.
+// captureQualityConfig.ts); these are either carried over from values hardcoded in
+// Website's hand_model.ts, where they were arrived at by eye, or first guesses at
+// geometry the palm detector could not measure at all. Treat them as a starting point to
+// iterate against on a phone, not as measured limits - the recorder exports the raw
+// value behind every one of them.
 
 /**
  * The guide box the patient must put both hands inside, as a fraction of the displayed
@@ -20,10 +22,9 @@
  * WIDENED 2026-09-10 from the source asset's 0.134-0.828 (x=112.5 w=582 in the 839-wide
  * viewBox) to 0.06-0.94, because two hands held at a natural distance apart did not fit.
  *
- * Widening this is NOT free: detectionRegions derives its crops from this box, so a wider
- * box means a larger crop and fewer model-input pixels per hand - at 1620x911 the palm
- * goes from ~58px to ~46px, against ~22px for the whole-frame framing this replaced.
- * There is a width past which the resolution win is given back entirely.
+ * The half-crop framing that used to derive from this box is gone with the palm detector:
+ * HandLandmarker tracks each hand and re-crops around it internally, so widening the box
+ * no longer costs detector resolution.
  */
 export const HAND_GUIDE_BOX = {
 	x: 0.06,
@@ -33,26 +34,55 @@ export const HAND_GUIDE_BOX = {
 } as const;
 
 /**
- * How far inside the frame edge a palm's bounding box must sit to count as fully in
- * view, as a fraction of the frame. Small and positive rather than zero: box regression
- * is noisy at the edges, and a palm touching the boundary is about to be clipped anyway.
- * UNCALIBRATED.
+ * How far inside the frame edge every one of a hand's 21 landmarks must sit to count as
+ * fully in view, as a fraction of the frame. Small and positive rather than zero:
+ * landmarks are estimated, not observed, at the boundary, and a hand touching the edge is
+ * about to be clipped anyway. UNCALIBRATED.
  */
 export const FRAME_EDGE_MARGIN = 0.01;
 
 /**
- * Accepted palm orientation, in radians, as returned by handOrientation() - atan2 with y
- * pointing down, so -PI/2 is a palm pointing straight up the frame. The window is
- * carried over from hand_model.ts's `radians < -1.0 && radians > -2.0`, i.e. roughly
- * +/- 29 degrees either side of vertical. UNCALIBRATED.
+ * Accepted pointing direction, in radians (atan2, y down), measured wrist -> middle
+ * knuckle. -PI/2 is straight up. Carried over from the palm detector's
+ * `radians < -1.0 && radians > -2.0`, roughly +/- 29 degrees either side of vertical, but
+ * now measured on a real hand axis rather than from one palm landmark. UNCALIBRATED.
  */
-/**
- * Fraction of extra width each half-crop takes, so a hand on the centre seam is whole in
- * at least one of them.
- */
-export const REGION_OVERLAP = 0.12;
-
 export const HAND_ALIGNMENT_RADIANS = { min: -2.0, max: -1.0 } as const;
+
+/**
+ * palmFacingScore above this counts as the palm facing the camera. The score passes
+ * through zero as a hand turns edge-on, so the band between +/- this value is "cannot
+ * tell" and is deliberately treated as not-facing: telling a patient to turn a hand that
+ * is already correct is a cheaper mistake than passing one that is not.
+ *
+ * UNCALIBRATED, and the number here most likely to be wrong - its sign folds MediaPipe's
+ * handedness together with a mirrored preview. The recorder exports the raw score per
+ * hand so it can be fitted from a palms-in / palms-out pair.
+ */
+export const PALM_FACING_MIN_SCORE = 0.15;
+
+/**
+ * Minimum knuckle-to-tip distance, in palm-size units, for every finger. Below this a
+ * finger is curled. UNCALIBRATED.
+ */
+export const FINGER_EXTENSION_MIN = 0.75;
+
+/**
+ * Minimum gap between neighbouring fingertips, in palm-size units. Below this the fingers
+ * are pressed together or overlapping. UNCALIBRATED.
+ */
+export const FINGER_SEPARATION_MIN = 0.12;
+
+/**
+ * MediaPipe documents handedness as assuming a MIRRORED (selfie-flipped) input image. The
+ * detector is fed the raw sensor frame, so the label it returns is the opposite of the
+ * patient's actual hand and has to be swapped.
+ *
+ * Asserted from the documentation, not measured, and getting it backwards silently swaps
+ * every left/right instruction - so the check derives the side independently from which
+ * half of the guide the hand is in, uses THAT, and records whether the two agree.
+ */
+export const SWAP_MEDIAPIPE_HANDEDNESS = true;
 
 /** Motor is a selfie assessment: the preview is mirrored, so display x is flipped. */
 export const MIRROR_PREVIEW = true;

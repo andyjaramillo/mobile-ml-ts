@@ -1,25 +1,33 @@
 // [Feature: Test Motor]
 //
-// The actual error detection: given the palm detections for one frame, decide whether
-// the hands are correctly in frame, and smooth that decision over a short window so the
-// banner does not flicker.
+// The check: given the landmarked hands for one frame, decide whether the patient is set
+// up correctly, and smooth that decision so the banner does not flicker.
 //
-// This is Website's canStartTimer/shouldStopTimer logic, with two changes. It reports a
-// REASON instead of a boolean, because a patient who is told "move your hands into the
-// box" can act and a patient watching a countdown refuse to start cannot. And it never
-// gates recording - see the repo's fail-open rule; the worst a wrong answer here can do
-// is show unhelpful text.
+// It never gates recording - see the repo's fail-open rule. The worst a wrong answer
+// here can do is show unhelpful text.
 //
-// Pure: no React, no DOM. Everything it needs about the frame is passed in.
-import { handOrientation } from "./handOnnxUtil";
-import type { HandDetection, HandPoint } from "./handModel";
+// Pure: no React, no DOM, no MediaPipe. Everything it needs about the frame is passed in.
 import {
+	handBounds,
+	minFingerExtension,
+	minFingerSeparation,
+	palmCenter,
+	palmFacingScore,
+	pointingRadians,
+} from "./handGeometry";
+import type { Point2D } from "./handGeometry";
+import type { LandmarkedHand } from "./handLandmarker";
+import {
+	FINGER_EXTENSION_MIN,
+	FINGER_SEPARATION_MIN,
 	FRAME_EDGE_MARGIN,
 	HAND_ALIGNMENT_RADIANS,
 	HAND_GUIDE_BOX,
 	MIRROR_PREVIEW,
+	PALM_FACING_MIN_SCORE,
 	STATUS_HOLD_RATIO,
 	STATUS_WINDOW_TICKS,
+	SWAP_MEDIAPIPE_HANDEDNESS,
 } from "./motorConfig";
 
 export const MOTOR_ISSUE_CODES = [
@@ -35,13 +43,12 @@ export const MOTOR_ISSUE_CODES = [
 	"LEFT_HAND_MISSING",
 	"RIGHT_HAND_MISSING",
 	/**
-	 * Detected, but the palm's bounding box runs off the edge of the frame. Reported ahead
-	 * of the guide-box codes because a clipped hand usually also sits outside the box, and
-	 * "part of your hand is cut off" is the more specific instruction of the two.
+	 * Detected, but the hand's landmark bounds run off the edge of the frame. Reported
+	 * ahead of the guide-box codes because a clipped hand usually also sits outside the
+	 * box, and "part of your hand is cut off" is the more specific instruction.
 	 *
-	 * CAVEAT: this model returns a PALM box, not a whole-hand box, so a hand whose fingers
-	 * are cut off while the palm is fully visible does NOT trigger this. Catching that
-	 * needs the 21-landmark hand model.
+	 * Now measured over all 21 landmarks, so unlike the palm-box version this does catch
+	 * fingertips clipped at the top of frame while the palm is fully visible.
 	 */
 	"BOTH_HANDS_NOT_FULLY_IN_FRAME",
 	"LEFT_HAND_NOT_FULLY_IN_FRAME",
@@ -49,9 +56,21 @@ export const MOTOR_ISSUE_CODES = [
 	"BOTH_HANDS_OUTSIDE_GUIDE",
 	"LEFT_HAND_OUTSIDE_GUIDE",
 	"RIGHT_HAND_OUTSIDE_GUIDE",
-	"BOTH_HANDS_MISALIGNED",
-	"LEFT_HAND_MISALIGNED",
-	"RIGHT_HAND_MISALIGNED",
+	/** The back of the hand is toward the camera, or it is turned too far edge-on to tell. */
+	"BOTH_PALMS_NOT_FACING_CAMERA",
+	"LEFT_PALM_NOT_FACING_CAMERA",
+	"RIGHT_PALM_NOT_FACING_CAMERA",
+	/**
+	 * Fingers curled, or pressed together / overlapping. One code rather than two: a
+	 * patient asked to open their hand fixes both at once, and splitting them would mean
+	 * calibrating two thresholds to tell apart states that share a remedy.
+	 */
+	"BOTH_HANDS_NOT_OPEN",
+	"LEFT_HAND_NOT_OPEN",
+	"RIGHT_HAND_NOT_OPEN",
+	"BOTH_HANDS_NOT_UPRIGHT",
+	"LEFT_HAND_NOT_UPRIGHT",
+	"RIGHT_HAND_NOT_UPRIGHT",
 	/** Someone else's hands are in shot, or one hand was detected twice on one side. */
 	"TOO_MANY_HANDS",
 	"HANDS_READY",
@@ -66,20 +85,27 @@ export type HandSide = "left" | "right";
 
 export interface EvaluatedHand {
 	side: HandSide;
-	/** Palm centre in displayed-frame pixels, already mirrored if the preview is. */
+	/** Side as MediaPipe's handedness implies it, independent of where the hand sits. */
+	handednessSide: HandSide;
+	/**
+	 * False when handedness and the guide-half disagree. Expected when the patient crosses
+	 * their hands - and also what a wrong SWAP_MEDIAPIPE_HANDEDNESS would look like, which
+	 * is why it is recorded rather than resolved silently.
+	 */
+	sidesAgree: boolean;
+	/** Palm centre in displayed-frame pixels. */
 	x: number;
 	y: number;
-	/** [x1, y1, x2, y2], same space as x/y. x1 stays the left edge after mirroring. */
-	bbox: [number, number, number, number];
-	/** Same space as x/y, so the overlay never has to mirror anything itself. */
-	landmarks: HandPoint[];
-	score: number;
-	/** Palm orientation in radians (atan2, y down). -PI/2 points straight up the frame. */
-	radians: number;
+	landmarks: Point2D[];
+	pointingRadians: number;
+	palmFacingScore: number;
+	minFingerExtension: number;
+	minFingerSeparation: number;
 	insideGuide: boolean;
-	aligned: boolean;
-	/** The whole palm box is inside the frame - see LEFT_HAND_NOT_FULLY_IN_FRAME. */
 	fullyInFrame: boolean;
+	palmFacing: boolean;
+	open: boolean;
+	upright: boolean;
 }
 
 export interface HandFrameEvaluation {
@@ -108,29 +134,29 @@ export function guideBoxPixels(frameWidth: number, frameHeight: number): { minX:
 }
 
 /**
- * Detections come out of the model in the video's own pixel space, but the patient sees
- * a mirrored preview with an unmirrored guide drawn on top. Comparing the two without
- * flipping compares a hand on the left of the sensor against a box drawn for the right
- * of the screen, which is only invisible because the box is nearly centred.
+ * Detections arrive in the video's own pixel space, but the patient sees a mirrored
+ * preview with an unmirrored guide drawn on top. Every landmark is flipped once, here,
+ * so nothing downstream has to think about it - signed areas and angles both invert
+ * under a mirror, and mixing the two spaces is what made the palm-detector version wrong.
  */
-function toDisplayX(x: number, frameWidth: number): number {
-	return MIRROR_PREVIEW ? frameWidth - x : x;
+function toDisplaySpace(landmarks: readonly Point2D[], frameWidth: number): Point2D[] {
+	if (!MIRROR_PREVIEW) return landmarks.map((point) => ({ ...point }));
+	return landmarks.map((point) => ({ x: frameWidth - point.x, y: point.y }));
 }
 
-/**
- * The preview is mirrored, so it behaves like a mirror: the patient's own left hand
- * appears on the LEFT of the screen. Without the mirror the camera sees them the way a
- * person facing them would and the sides swap, so this reads MIRROR_PREVIEW rather than
- * assuming either convention - getting it backwards would tell a patient to move the
- * wrong hand, which is worse than saying nothing.
- */
-function sideFor(displayX: number, boxCenterX: number): HandSide {
+function sideFromGuideHalf(displayX: number, boxCenterX: number): HandSide {
 	const onDisplayLeft = displayX < boxCenterX;
 	return onDisplayLeft === MIRROR_PREVIEW ? "left" : "right";
 }
 
+function sideFromHandedness(hand: LandmarkedHand): HandSide {
+	const reported: HandSide = hand.rawHandedness === "Left" ? "left" : "right";
+	if (!SWAP_MEDIAPIPE_HANDEDNESS) return reported;
+	return reported === "left" ? "right" : "left";
+}
+
 export function evaluateHandFrame(
-	detections: HandDetection[],
+	hands: readonly LandmarkedHand[],
 	frameWidth: number,
 	frameHeight: number
 ): HandFrameEvaluation {
@@ -139,39 +165,46 @@ export function evaluateHandFrame(
 	const marginX = FRAME_EDGE_MARGIN * frameWidth;
 	const marginY = FRAME_EDGE_MARGIN * frameHeight;
 
-	const hands: EvaluatedHand[] = detections.map((detection) => {
-		const x = toDisplayX(detection.x, frameWidth);
-		const y = detection.y;
-		// Mirroring negates the horizontal component, so the angle reflects about the
-		// vertical axis. Reflecting keeps the alignment window meaningful on the image the
-		// patient is actually looking at.
-		const rawRadians = handOrientation(detection);
-		const radians = MIRROR_PREVIEW ? Math.atan2(Math.sin(rawRadians), -Math.cos(rawRadians)) : rawRadians;
-		const [x1, , x2] = detection.bbox;
-		const displayX1 = toDisplayX(MIRROR_PREVIEW ? x2 : x1, frameWidth);
-		const displayX2 = toDisplayX(MIRROR_PREVIEW ? x1 : x2, frameWidth);
+	const evaluated: EvaluatedHand[] = hands.map((hand) => {
+		const landmarks = toDisplaySpace(hand.landmarks, frameWidth);
+		const center = palmCenter(landmarks);
+		const bounds = handBounds(landmarks);
+
+		// The guide half is the authority for WHICH hand this is: it is what the patient is
+		// looking at, and it stays right when handedness is uncertain on a turned hand.
+		// Handedness is kept alongside it rather than instead of it.
+		const guideSide = sideFromGuideHalf(center.x, boxCenterX);
+		const handednessSide = sideFromHandedness(hand);
+
+		const facing = palmFacingScore(landmarks, guideSide === "right");
+		const extension = minFingerExtension(landmarks);
+		const separation = minFingerSeparation(landmarks);
+		const pointing = pointingRadians(landmarks);
 
 		return {
-			side: sideFor(x, boxCenterX),
-			x,
-			y,
-			bbox: [displayX1, detection.bbox[1], displayX2, detection.bbox[3]],
-			landmarks: detection.landmarks.map((point) => ({ x: toDisplayX(point.x, frameWidth), y: point.y })),
-			score: detection.score,
-			radians,
-			insideGuide: x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY,
-			aligned: radians > HAND_ALIGNMENT_RADIANS.min && radians < HAND_ALIGNMENT_RADIANS.max,
-			// The model regresses box coordinates rather than clipping them to the image, so
-			// a partly out-of-frame palm really does come back with a box outside the bounds.
+			side: guideSide,
+			handednessSide,
+			sidesAgree: guideSide === handednessSide,
+			x: center.x,
+			y: center.y,
+			landmarks,
+			pointingRadians: pointing,
+			palmFacingScore: facing,
+			minFingerExtension: extension,
+			minFingerSeparation: separation,
+			insideGuide: center.x >= box.minX && center.x <= box.maxX && center.y >= box.minY && center.y <= box.maxY,
 			fullyInFrame:
-				displayX1 >= marginX &&
-				displayX2 <= frameWidth - marginX &&
-				detection.bbox[1] >= marginY &&
-				detection.bbox[3] <= frameHeight - marginY,
+				bounds.minX >= marginX &&
+				bounds.maxX <= frameWidth - marginX &&
+				bounds.minY >= marginY &&
+				bounds.maxY <= frameHeight - marginY,
+			palmFacing: facing >= PALM_FACING_MIN_SCORE,
+			open: extension >= FINGER_EXTENSION_MIN && separation >= FINGER_SEPARATION_MIN,
+			upright: pointing > HAND_ALIGNMENT_RADIANS.min && pointing < HAND_ALIGNMENT_RADIANS.max,
 		};
 	});
 
-	return { handCount: hands.length, hands, code: codeFor(hands) };
+	return { handCount: evaluated.length, hands: evaluated, code: codeFor(evaluated) };
 }
 
 /** The three codes a per-hand check reports, picked by how many hands are failing it. */
@@ -191,10 +224,20 @@ const OUTSIDE_GUIDE: SideCodes = {
 	left: "LEFT_HAND_OUTSIDE_GUIDE",
 	right: "RIGHT_HAND_OUTSIDE_GUIDE",
 };
-const MISALIGNED: SideCodes = {
-	both: "BOTH_HANDS_MISALIGNED",
-	left: "LEFT_HAND_MISALIGNED",
-	right: "RIGHT_HAND_MISALIGNED",
+const PALM_NOT_FACING: SideCodes = {
+	both: "BOTH_PALMS_NOT_FACING_CAMERA",
+	left: "LEFT_PALM_NOT_FACING_CAMERA",
+	right: "RIGHT_PALM_NOT_FACING_CAMERA",
+};
+const NOT_OPEN: SideCodes = {
+	both: "BOTH_HANDS_NOT_OPEN",
+	left: "LEFT_HAND_NOT_OPEN",
+	right: "RIGHT_HAND_NOT_OPEN",
+};
+const NOT_UPRIGHT: SideCodes = {
+	both: "BOTH_HANDS_NOT_UPRIGHT",
+	left: "LEFT_HAND_NOT_UPRIGHT",
+	right: "RIGHT_HAND_NOT_UPRIGHT",
 };
 
 // Reached only with exactly one hand per side, so two failures means both of them.
@@ -205,13 +248,14 @@ function codeForFailing(failing: readonly EvaluatedHand[], codes: SideCodes): Mo
 }
 
 // Ordered by what the patient should fix first: a hand that is not in shot has to be
-// found before anything can be said about where it is pointing.
+// found before anything can be said about how it is turned. Palm-facing precedes
+// openness because a hand seen from the back reads as closed whether it is or not.
 function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
 	const left = hands.filter((hand) => hand.side === "left").length;
 	const right = hands.filter((hand) => hand.side === "right").length;
 
 	if (left === 0 && right === 0) return "BOTH_HANDS_MISSING";
-	// Checked before the missing cases: two palms on one side and none on the other means
+	// Checked before the missing cases: two hands on one side and none on the other means
 	// something was detected twice or someone else is in shot, and telling the patient to
 	// raise a hand they are already holding up would be actively misleading.
 	if (left > 1 || right > 1) return "TOO_MANY_HANDS";
@@ -221,7 +265,9 @@ function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
 	return (
 		codeForFailing(hands.filter((hand) => !hand.fullyInFrame), NOT_FULLY_IN_FRAME) ??
 		codeForFailing(hands.filter((hand) => !hand.insideGuide), OUTSIDE_GUIDE) ??
-		codeForFailing(hands.filter((hand) => !hand.aligned), MISALIGNED) ??
+		codeForFailing(hands.filter((hand) => !hand.palmFacing), PALM_NOT_FACING) ??
+		codeForFailing(hands.filter((hand) => !hand.open), NOT_OPEN) ??
+		codeForFailing(hands.filter((hand) => !hand.upright), NOT_UPRIGHT) ??
 		"HANDS_READY"
 	);
 }
@@ -238,9 +284,9 @@ export function resetHandStatusWindow(window: HandStatusWindow): void {
 /**
  * Pushes one tick and returns what should be displayed. A new code has to hold for
  * STATUS_HOLD_RATIO of the window before it replaces the last one; below that the
- * previous answer stands. Carried over from Website's 70%-of-buffer rule, which was
- * only ever applied to cancelling the countdown - here it governs every transition, so
- * a single dropped detection cannot make the banner jump.
+ * previous answer stands. Carried over from the palm detector's 70%-of-buffer rule,
+ * which was only ever applied to cancelling its countdown - here it governs every
+ * transition, so a single dropped detection cannot make the banner jump.
  */
 export function pushHandStatus(window: HandStatusWindow, code: MotorIssueCode): MotorIssueCode {
 	window.codes.push(code);
