@@ -22,6 +22,7 @@ function hand(overrides: Partial<EvaluatedHand> = {}): EvaluatedHand {
 		radians: -Math.PI / 2,
 		insideGuide: true,
 		aligned: true,
+		fullyInFrame: true,
 		...overrides,
 	};
 }
@@ -77,15 +78,18 @@ describe("motorRecorder", () => {
 		recordMotorTick(state, sample());
 
 		const line = buildCompactExport(state);
-		expect(line.startsWith("MH2|hands in box|n=1|")).toBe(true);
+		expect(line.startsWith("MH3|hands in box|n=1|")).toBe(true);
 		expect(line).toContain("be=wasm");
 		expect(line).toContain("crop=-");
 		expect(line).toContain("thr=650");
 		expect(line).toContain("res=800x450");
-		// maxScore 0.92 -> 920, 5 over threshold, 2 grouped, HANDS_READY is index 6.
-		expect(line).toContain("920:5:2:6:");
-		// Left hand: flags 3 (inside + aligned). Right hand: flags 7 (those plus bit2).
-		expect(line).toContain("500,667,-90,3,90/625,667,-90,7,90");
+		// A line carries its own legend, so the index is read against this list rather than
+		// against whatever the code happens to export today.
+		const codes = line.split("|").find((part) => part.startsWith("codes="))!.slice(6).split(",");
+		expect(codes).toContain("HANDS_READY");
+		expect(line).toContain(`920:5:2:${codes.indexOf("HANDS_READY")}:`);
+		// Left hand: flags 11 (inside + aligned + whole). Right hand: 15 (those plus bit2).
+		expect(line).toContain("500,667,-90,11,90/625,667,-90,15,90");
 	});
 
 	it("records a zero-hand tick without an empty trailing field per hand", () => {

@@ -33,6 +33,14 @@ export const HAND_GUIDE_BOX = {
 } as const;
 
 /**
+ * How far inside the frame edge a palm's bounding box must sit to count as fully in
+ * view, as a fraction of the frame. Small and positive rather than zero: box regression
+ * is noisy at the edges, and a palm touching the boundary is about to be clipped anyway.
+ * UNCALIBRATED.
+ */
+export const FRAME_EDGE_MARGIN = 0.01;
+
+/**
  * Accepted palm orientation, in radians, as returned by handOrientation() - atan2 with y
  * pointing down, so -PI/2 is a palm pointing straight up the frame. The window is
  * carried over from hand_model.ts's `radians < -1.0 && radians > -2.0`, i.e. roughly

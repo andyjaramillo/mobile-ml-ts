@@ -90,6 +90,10 @@ function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, sco
 						<span>in box</span>
 						<span className={hand.insideGuide ? "mhh-ok" : "mhh-bad"}>{hand.insideGuide ? "yes" : "no"}</span>
 					</div>
+					<div className="mhh-row">
+						<span>in frame</span>
+						<span className={hand.fullyInFrame ? "mhh-ok" : "mhh-bad"}>{hand.fullyInFrame ? "whole" : "clipped"}</span>
+					</div>
 				</div>
 			))}
 		</div>

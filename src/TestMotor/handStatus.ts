@@ -14,6 +14,7 @@
 import { handOrientation } from "./handOnnxUtil";
 import type { HandDetection, HandPoint } from "./handModel";
 import {
+	FRAME_EDGE_MARGIN,
 	HAND_ALIGNMENT_RADIANS,
 	HAND_GUIDE_BOX,
 	MIRROR_PREVIEW,
@@ -30,6 +31,17 @@ export const MOTOR_ISSUE_CODES = [
 	 */
 	"LEFT_HAND_MISSING",
 	"RIGHT_HAND_MISSING",
+	/**
+	 * Detected, but its bounding box runs off the edge of the frame. Reported ahead of the
+	 * guide-box codes because a clipped hand usually also sits outside the box, and "part
+	 * of your hand is cut off" is the more specific instruction of the two.
+	 *
+	 * CAVEAT: this model returns a PALM box, not a whole-hand box, so a hand whose fingers
+	 * are cut off while the palm is fully visible does NOT trigger this. Catching that
+	 * needs the 21-landmark hand model.
+	 */
+	"LEFT_HAND_NOT_FULLY_IN_FRAME",
+	"RIGHT_HAND_NOT_FULLY_IN_FRAME",
 	/** Someone else's hands are in shot, or one hand was detected twice on one side. */
 	"TOO_MANY_HANDS",
 	"HANDS_OUTSIDE_GUIDE",
@@ -58,6 +70,8 @@ export interface EvaluatedHand {
 	radians: number;
 	insideGuide: boolean;
 	aligned: boolean;
+	/** The whole palm box is inside the frame - see LEFT_HAND_NOT_FULLY_IN_FRAME. */
+	fullyInFrame: boolean;
 }
 
 export interface HandFrameEvaluation {
@@ -114,6 +128,8 @@ export function evaluateHandFrame(
 ): HandFrameEvaluation {
 	const box = guideBoxPixels(frameWidth, frameHeight);
 	const boxCenterX = (box.minX + box.maxX) / 2;
+	const marginX = FRAME_EDGE_MARGIN * frameWidth;
+	const marginY = FRAME_EDGE_MARGIN * frameHeight;
 
 	const hands: EvaluatedHand[] = detections.map((detection) => {
 		const x = toDisplayX(detection.x, frameWidth);
@@ -137,6 +153,13 @@ export function evaluateHandFrame(
 			radians,
 			insideGuide: x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY,
 			aligned: radians > HAND_ALIGNMENT_RADIANS.min && radians < HAND_ALIGNMENT_RADIANS.max,
+			// The model regresses box coordinates rather than clipping them to the image, so
+			// a partly out-of-frame palm really does come back with a box outside the bounds.
+			fullyInFrame:
+				displayX1 >= marginX &&
+				displayX2 <= frameWidth - marginX &&
+				detection.bbox[1] >= marginY &&
+				detection.bbox[3] <= frameHeight - marginY,
 		};
 	});
 
@@ -156,6 +179,12 @@ function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
 	if (left > 1 || right > 1) return "TOO_MANY_HANDS";
 	if (left === 0) return "LEFT_HAND_MISSING";
 	if (right === 0) return "RIGHT_HAND_MISSING";
+
+	// One hand per side from here on. When both are clipped only the left is named; the
+	// right surfaces on the next tick once the left is fixed, which reads better than a
+	// combined message the patient has to act on twice anyway.
+	const clipped = hands.find((hand) => !hand.fullyInFrame);
+	if (clipped) return clipped.side === "left" ? "LEFT_HAND_NOT_FULLY_IN_FRAME" : "RIGHT_HAND_NOT_FULLY_IN_FRAME";
 
 	if (!hands.every((hand) => hand.insideGuide)) return "HANDS_OUTSIDE_GUIDE";
 	if (!hands.every((hand) => hand.aligned)) return "HANDS_MISALIGNED";

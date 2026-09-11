@@ -18,7 +18,7 @@ const FRAME_H = 450;
  * converted back to sensor space, so a test can say where a hand appears on screen
  * without restating the mirror maths under test.
  */
-function detectionAt(displayX: number, displayY: number, radians: number, score = 0.9): HandDetection {
+function detectionAt(displayX: number, displayY: number, radians: number, score = 0.9, half = 30): HandDetection {
 	const sensorX = MIRROR_PREVIEW ? FRAME_W - displayX : displayX;
 	// Mirroring reflects the angle about the vertical axis; undo that to get the sensor-space angle.
 	const sensorRadians = MIRROR_PREVIEW ? Math.atan2(Math.sin(radians), -Math.cos(radians)) : radians;
@@ -29,7 +29,7 @@ function detectionAt(displayX: number, displayY: number, radians: number, score 
 		y: displayY + reach * Math.sin(sensorRadians),
 	};
 	return {
-		bbox: [sensorX - 30, displayY - 30, sensorX + 30, displayY + 30],
+		bbox: [sensorX - half, displayY - half, sensorX + half, displayY + half],
 		score,
 		landmarks,
 		x: sensorX,
@@ -133,6 +133,54 @@ describe("evaluateHandFrame", () => {
 		);
 		expect(result.code).toBe("HANDS_READY");
 		expect(result.hands.every((hand) => hand.insideGuide && hand.aligned)).toBe(true);
+	});
+
+	it("names the clipped hand when a palm box runs off the frame edge", () => {
+		const box = guideBoxPixels(FRAME_W, FRAME_H);
+		const { y } = insideCentre();
+		const span = box.maxX - box.minX;
+		const ok = detectionAt(box.minX + span * 0.25, y, UPRIGHT);
+		// Centre still inside the guide, but the box overhangs the right edge of the frame.
+		const clipped = detectionAt(FRAME_W - 10, y, UPRIGHT, 0.9, 60);
+
+		const result = evaluateHandFrame([ok, clipped], FRAME_W, FRAME_H);
+		const clippedHand = result.hands.find((hand) => !hand.fullyInFrame);
+		expect(clippedHand).toBeDefined();
+		expect(result.code).toBe(
+			clippedHand!.side === "left" ? "LEFT_HAND_NOT_FULLY_IN_FRAME" : "RIGHT_HAND_NOT_FULLY_IN_FRAME"
+		);
+	});
+
+	it("treats a clipped hand as present rather than missing", () => {
+		const box = guideBoxPixels(FRAME_W, FRAME_H);
+		const { y } = insideCentre();
+		const span = box.maxX - box.minX;
+		const result = evaluateHandFrame(
+			[detectionAt(box.minX + span * 0.25, y, UPRIGHT), detectionAt(FRAME_W - 10, y, UPRIGHT, 0.9, 60)],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(result.code).not.toBe("LEFT_HAND_MISSING");
+		expect(result.code).not.toBe("RIGHT_HAND_MISSING");
+	});
+
+	it("reports clipping ahead of a guide-box miss, since it is the more specific fix", () => {
+		const box = guideBoxPixels(FRAME_W, FRAME_H);
+		const span = box.maxX - box.minX;
+		// Both hands outside the box vertically; one of them also clipped by the frame.
+		const aboveBox = box.minY - 40;
+		const result = evaluateHandFrame(
+			[detectionAt(box.minX + span * 0.25, aboveBox, UPRIGHT), detectionAt(FRAME_W - 10, aboveBox, UPRIGHT, 0.9, 60)],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(result.code).toMatch(/NOT_FULLY_IN_FRAME$/);
+	});
+
+	it("counts a hand well inside the frame as whole", () => {
+		const { x, y } = insideCentre();
+		const [hand] = evaluateHandFrame([detectionAt(x, y, UPRIGHT)], FRAME_W, FRAME_H).hands;
+		expect(hand.fullyInFrame).toBe(true);
 	});
 
 	it("reports HANDS_OUTSIDE_GUIDE when one palm leaves the box", () => {

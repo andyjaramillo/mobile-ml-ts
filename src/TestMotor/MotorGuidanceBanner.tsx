@@ -13,6 +13,8 @@ const MESSAGES: Record<MotorIssueCode, string> = {
 	BOTH_HANDS_MISSING: "Hold both hands up in front of the camera",
 	LEFT_HAND_MISSING: "Bring your left hand into view",
 	RIGHT_HAND_MISSING: "Bring your right hand into view",
+	LEFT_HAND_NOT_FULLY_IN_FRAME: "Your left hand is cut off - move it further into view",
+	RIGHT_HAND_NOT_FULLY_IN_FRAME: "Your right hand is cut off - move it further into view",
 	TOO_MANY_HANDS: "Only the patient's hands should be in view",
 	HANDS_OUTSIDE_GUIDE: "Move your hands into the dashed box",
 	HANDS_MISALIGNED: "Turn your palms to face the camera",

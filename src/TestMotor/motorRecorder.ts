@@ -7,13 +7,15 @@
 //
 // Pure (no React) so the encoder is unit-testable without rendering.
 //
-// EXPORT FORMAT (v2, "MH2"):
+// EXPORT FORMAT (v3, "MH3"):
 //
-// v2 renumbers <codeIndex>: MOTOR_ISSUE_CODES gained LEFT_HAND_MISSING/RIGHT_HAND_MISSING
-// and dropped ONE_HAND_ONLY, and the index is positional, so an MH1 line read as MH2
-// would decode to the wrong codes rather than fail. Hence a new prefix.
+// v3 makes a line SELF-DESCRIBING: the header now carries the code list that
+// <codeIndex> indexes into. v1->v2 needed a version bump purely because a code was added
+// in the middle and every older line would have silently decoded to the wrong codes; the
+// check list is going to keep growing, so the fix is to ship the legend with the data
+// rather than to renumber the format every time. Costs ~200 chars once per line.
 //
-//   MH2|<tag>|n=<count>|stride=<stride>|be=<backend>|crop=<mode>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|<samples>
+//   MH3|<tag>|n=<count>|stride=<stride>|be=<backend>|crop=<mode>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
 //
 // <samples> is `;`-joined, oldest first:
 //
@@ -21,8 +23,8 @@
 //
 // <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<scoreCenti>` with position normalized
 // to the frame (so a recording survives a resolution change) and flags as bit0=inside
-// guide, bit1=aligned, bit2=right hand (0=left). The hand list is empty when nothing was
-// detected.
+// guide, bit1=aligned, bit2=right hand (0=left), bit3=whole palm box inside the frame.
+// The hand list is empty when nothing was detected.
 //
 // maxScoreMilli is the headline field: it is the highest score across EVERY anchor before
 // thresholding, so a recording where it sits near 1000 while `grouped` stays 0 proves the
@@ -133,7 +135,11 @@ export function recordMotorTick(state: MotorRecorderState, sample: MotorRecorder
 }
 
 function encodeHand(hand: EvaluatedHand, frameWidth: number, frameHeight: number): string {
-	const flags = (hand.insideGuide ? 1 : 0) | (hand.aligned ? 2 : 0) | (hand.side === "right" ? 4 : 0);
+	const flags =
+		(hand.insideGuide ? 1 : 0) |
+		(hand.aligned ? 2 : 0) |
+		(hand.side === "right" ? 4 : 0) |
+		(hand.fullyInFrame ? 8 : 0);
 	return [
 		Math.round((hand.x / frameWidth) * POS_MILLI),
 		Math.round((hand.y / frameHeight) * POS_MILLI),
@@ -165,7 +171,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 	const tag = state.scenarioTag.slice(0, MAX_TAG_CHARS).replace(/[|;:/]/g, " ").trim();
 
 	const header = [
-		"MH2",
+		"MH3",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
@@ -175,6 +181,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 		`thr=${Math.round(state.scoreThreshold * SCORE_MILLI)}`,
 		`hz=${mean(samples.map((sample) => sample.tickHz)).toFixed(1)}`,
 		`inf=${Math.round(mean(samples.map((sample) => sample.inferenceMs)))}`,
+		`codes=${MOTOR_ISSUE_CODES.join(",")}`,
 	].join("|");
 
 	const line = `${header}|${samples.map(encodeSample).join(";")}`;
