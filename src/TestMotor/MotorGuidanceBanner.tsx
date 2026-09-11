@@ -10,8 +10,9 @@
 import type { MotorIssueCode } from "./handStatus";
 
 const MESSAGES: Record<MotorIssueCode, string> = {
-	NO_HANDS_DETECTED: "Hold both hands up in front of the camera",
-	ONE_HAND_ONLY: "Both hands need to be in view",
+	BOTH_HANDS_MISSING: "Hold both hands up in front of the camera",
+	LEFT_HAND_MISSING: "Bring your left hand into view",
+	RIGHT_HAND_MISSING: "Bring your right hand into view",
 	TOO_MANY_HANDS: "Only the patient's hands should be in view",
 	HANDS_OUTSIDE_GUIDE: "Move your hands into the dashed box",
 	HANDS_MISALIGNED: "Turn your palms to face the camera",

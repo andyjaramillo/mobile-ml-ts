@@ -7,9 +7,13 @@
 //
 // Pure (no React) so the encoder is unit-testable without rendering.
 //
-// EXPORT FORMAT (v1, "MH1"):
+// EXPORT FORMAT (v2, "MH2"):
 //
-//   MH1|<tag>|n=<count>|stride=<stride>|be=<backend>|crop=<mode>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|<samples>
+// v2 renumbers <codeIndex>: MOTOR_ISSUE_CODES gained LEFT_HAND_MISSING/RIGHT_HAND_MISSING
+// and dropped ONE_HAND_ONLY, and the index is positional, so an MH1 line read as MH2
+// would decode to the wrong codes rather than fail. Hence a new prefix.
+//
+//   MH2|<tag>|n=<count>|stride=<stride>|be=<backend>|crop=<mode>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|<samples>
 //
 // <samples> is `;`-joined, oldest first:
 //
@@ -17,7 +21,8 @@
 //
 // <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<scoreCenti>` with position normalized
 // to the frame (so a recording survives a resolution change) and flags as bit0=inside
-// guide, bit1=aligned. The hand list is empty when nothing was detected.
+// guide, bit1=aligned, bit2=right hand (0=left). The hand list is empty when nothing was
+// detected.
 //
 // maxScoreMilli is the headline field: it is the highest score across EVERY anchor before
 // thresholding, so a recording where it sits near 1000 while `grouped` stays 0 proves the
@@ -128,7 +133,7 @@ export function recordMotorTick(state: MotorRecorderState, sample: MotorRecorder
 }
 
 function encodeHand(hand: EvaluatedHand, frameWidth: number, frameHeight: number): string {
-	const flags = (hand.insideGuide ? 1 : 0) | (hand.aligned ? 2 : 0);
+	const flags = (hand.insideGuide ? 1 : 0) | (hand.aligned ? 2 : 0) | (hand.side === "right" ? 4 : 0);
 	return [
 		Math.round((hand.x / frameWidth) * POS_MILLI),
 		Math.round((hand.y / frameHeight) * POS_MILLI),
@@ -160,7 +165,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 	const tag = state.scenarioTag.slice(0, MAX_TAG_CHARS).replace(/[|;:/]/g, " ").trim();
 
 	const header = [
-		"MH1",
+		"MH2",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,

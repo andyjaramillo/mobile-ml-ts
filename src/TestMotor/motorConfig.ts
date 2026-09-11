@@ -49,8 +49,6 @@ export const HAND_ALIGNMENT_RADIANS = { min: -2.0, max: -1.0 } as const;
 /** Motor is a selfie assessment: the preview is mirrored, so display x is flipped. */
 export const MIRROR_PREVIEW = true;
 
-export const REQUIRED_HAND_COUNT = 2;
-
 /**
  * Status smoothing. Website ran the check on a buffer sized to fps/2 and required 70% of
  * it to disagree before it acted; the same shape is kept here, as ticks rather than

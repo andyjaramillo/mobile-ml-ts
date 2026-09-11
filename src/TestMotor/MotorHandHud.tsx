@@ -74,8 +74,8 @@ function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, sco
 			</div>
 			{evaluation?.hands.map((hand, index) => (
 				<div className="mhh-hand" key={index}>
-					<div className="mhh-row">
-						<span>hand {index}</span>
+					<div className="mhh-row mhh-row--strong">
+						<span>{hand.side} hand</span>
 						<span>score {hand.score.toFixed(2)}</span>
 					</div>
 					<div className="mhh-row">

@@ -17,16 +17,20 @@ import {
 	HAND_ALIGNMENT_RADIANS,
 	HAND_GUIDE_BOX,
 	MIRROR_PREVIEW,
-	REQUIRED_HAND_COUNT,
 	STATUS_HOLD_RATIO,
 	STATUS_WINDOW_TICKS,
 } from "./motorConfig";
 
 export const MOTOR_ISSUE_CODES = [
-	"NO_HANDS_DETECTED",
-	/** Exactly one palm - the other hand is out of frame, or occluded by the first. */
-	"ONE_HAND_ONLY",
-	/** More than two, so someone else's hands are in shot or one hand is double-detected. */
+	"BOTH_HANDS_MISSING",
+	/**
+	 * A hand is MISSING only when nothing was detected on its side of the guide. A hand
+	 * that is detected but sitting outside the box is a different problem with a different
+	 * remedy, and reports HANDS_OUTSIDE_GUIDE instead.
+	 */
+	"LEFT_HAND_MISSING",
+	"RIGHT_HAND_MISSING",
+	/** Someone else's hands are in shot, or one hand was detected twice on one side. */
 	"TOO_MANY_HANDS",
 	"HANDS_OUTSIDE_GUIDE",
 	"HANDS_MISALIGNED",
@@ -37,7 +41,11 @@ export const MOTOR_ISSUE_CODES = [
 
 export type MotorIssueCode = typeof MOTOR_ISSUE_CODES[number];
 
+/** Which of the PATIENT's hands this is, not which side of the image it landed on. */
+export type HandSide = "left" | "right";
+
 export interface EvaluatedHand {
+	side: HandSide;
 	/** Palm centre in displayed-frame pixels, already mirrored if the preview is. */
 	x: number;
 	y: number;
@@ -87,12 +95,25 @@ function toDisplayX(x: number, frameWidth: number): number {
 	return MIRROR_PREVIEW ? frameWidth - x : x;
 }
 
+/**
+ * The preview is mirrored, so it behaves like a mirror: the patient's own left hand
+ * appears on the LEFT of the screen. Without the mirror the camera sees them the way a
+ * person facing them would and the sides swap, so this reads MIRROR_PREVIEW rather than
+ * assuming either convention - getting it backwards would tell a patient to move the
+ * wrong hand, which is worse than saying nothing.
+ */
+function sideFor(displayX: number, boxCenterX: number): HandSide {
+	const onDisplayLeft = displayX < boxCenterX;
+	return onDisplayLeft === MIRROR_PREVIEW ? "left" : "right";
+}
+
 export function evaluateHandFrame(
 	detections: HandDetection[],
 	frameWidth: number,
 	frameHeight: number
 ): HandFrameEvaluation {
 	const box = guideBoxPixels(frameWidth, frameHeight);
+	const boxCenterX = (box.minX + box.maxX) / 2;
 
 	const hands: EvaluatedHand[] = detections.map((detection) => {
 		const x = toDisplayX(detection.x, frameWidth);
@@ -107,6 +128,7 @@ export function evaluateHandFrame(
 		const displayX2 = toDisplayX(MIRROR_PREVIEW ? x1 : x2, frameWidth);
 
 		return {
+			side: sideFor(x, boxCenterX),
 			x,
 			y,
 			bbox: [displayX1, detection.bbox[1], displayX2, detection.bbox[3]],
@@ -124,9 +146,17 @@ export function evaluateHandFrame(
 // Ordered by what the patient should fix first: a hand that is not in shot has to be
 // found before anything can be said about where it is pointing.
 function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
-	if (hands.length === 0) return "NO_HANDS_DETECTED";
-	if (hands.length < REQUIRED_HAND_COUNT) return "ONE_HAND_ONLY";
-	if (hands.length > REQUIRED_HAND_COUNT) return "TOO_MANY_HANDS";
+	const left = hands.filter((hand) => hand.side === "left").length;
+	const right = hands.filter((hand) => hand.side === "right").length;
+
+	if (left === 0 && right === 0) return "BOTH_HANDS_MISSING";
+	// Checked before the missing cases: two palms on one side and none on the other means
+	// something was detected twice or someone else is in shot, and telling the patient to
+	// raise a hand they are already holding up would be actively misleading.
+	if (left > 1 || right > 1) return "TOO_MANY_HANDS";
+	if (left === 0) return "LEFT_HAND_MISSING";
+	if (right === 0) return "RIGHT_HAND_MISSING";
+
 	if (!hands.every((hand) => hand.insideGuide)) return "HANDS_OUTSIDE_GUIDE";
 	if (!hands.every((hand) => hand.aligned)) return "HANDS_MISALIGNED";
 	return "HANDS_READY";

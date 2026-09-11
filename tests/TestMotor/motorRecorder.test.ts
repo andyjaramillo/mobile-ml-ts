@@ -17,6 +17,7 @@ function hand(overrides: Partial<EvaluatedHand> = {}): EvaluatedHand {
 		y: 300,
 		bbox: [370, 270, 430, 330],
 		landmarks: [],
+		side: "left",
 		score: 0.9,
 		radians: -Math.PI / 2,
 		insideGuide: true,
@@ -31,7 +32,7 @@ function sample(overrides: Partial<MotorRecorderSample> = {}): MotorRecorderSamp
 		aboveThresholdCount: 5,
 		groupedCount: 2,
 		code: "HANDS_READY",
-		hands: [hand(), hand({ x: 500 })],
+		hands: [hand(), hand({ x: 500, side: "right" })],
 		frameWidth: 800,
 		frameHeight: 450,
 		inferenceMs: 40,
@@ -76,21 +77,21 @@ describe("motorRecorder", () => {
 		recordMotorTick(state, sample());
 
 		const line = buildCompactExport(state);
-		expect(line.startsWith("MH1|hands in box|n=1|")).toBe(true);
+		expect(line.startsWith("MH2|hands in box|n=1|")).toBe(true);
 		expect(line).toContain("be=wasm");
 		expect(line).toContain("crop=-");
 		expect(line).toContain("thr=650");
 		expect(line).toContain("res=800x450");
-		// maxScore 0.92 -> 920, 5 over threshold, 2 grouped, HANDS_READY is index 5.
-		expect(line).toContain("920:5:2:5:");
-		// Two hands, flags 3 (inside + aligned), score 90.
-		expect(line).toContain("500,667,-90,3,90/");
+		// maxScore 0.92 -> 920, 5 over threshold, 2 grouped, HANDS_READY is index 6.
+		expect(line).toContain("920:5:2:6:");
+		// Left hand: flags 3 (inside + aligned). Right hand: flags 7 (those plus bit2).
+		expect(line).toContain("500,667,-90,3,90/625,667,-90,7,90");
 	});
 
 	it("records a zero-hand tick without an empty trailing field per hand", () => {
 		const state = createMotorRecorderState();
 		startMotorRecording(state, 0);
-		recordMotorTick(state, sample({ hands: [], groupedCount: 0, aboveThresholdCount: 0, maxScore: 0.02, code: "NO_HANDS_DETECTED" }));
+		recordMotorTick(state, sample({ hands: [], groupedCount: 0, aboveThresholdCount: 0, maxScore: 0.02, code: "BOTH_HANDS_MISSING" }));
 		expect(buildCompactExport(state)).toContain("20:0:0:0:");
 	});
 
