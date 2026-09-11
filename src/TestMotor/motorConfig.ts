@@ -52,15 +52,28 @@ export const HAND_ALIGNMENT_RADIANS = { min: -2.0, max: -1.0 } as const;
 
 /**
  * palmFacingScore above this counts as the palm facing the camera. The score passes
- * through zero as a hand turns edge-on, so the band between +/- this value is "cannot
- * tell" and is deliberately treated as not-facing: telling a patient to turn a hand that
- * is already correct is a cheaper mistake than passing one that is not.
+ * through zero as a hand turns edge-on, so a threshold near zero is a band of "cannot
+ * tell" rather than a hard flip.
  *
- * UNCALIBRATED, and the number here most likely to be wrong - its sign folds MediaPipe's
- * handedness together with a mirrored preview. The recorder exports the raw score per
- * hand so it can be fitted from a palms-in / palms-out pair.
+ * FITTED from tests/TestMotor/fixtures/palms-rotating-inward.mh5.txt (2026-09-11), a take
+ * that rotates both palms slowly inward from correct to edge-on. Hands the operator
+ * accepted as facing forward scored 0.468-0.621; the first hands to go wrong under
+ * rotation scored at most 0.455. 0.46 is wedged between the two.
+ *
+ * The previous value of 0.15 produced the WRONG INSTRUCTION rather than no instruction.
+ * Rotating a palm away foreshortens the fingers, which collapses fingerSpreadRatio long
+ * before the facing score reaches 0.15, so a patient turning their hands was told to
+ * spread their fingers - which they had already done. Palm facing is checked before
+ * openness for exactly this reason; the check only works if the threshold fires first.
+ *
+ * The window between the two classes is 0.013 wide, by far the tightest here, because the
+ * take rotates through the boundary continuously and there is no gap to sit in. Roughly,
+ * the score is the full-face value scaled by the cosine of the rotation, so 0.46 against a
+ * ~0.62 full-face reading is about 45 degrees off square. If this proves brittle across
+ * different hands, the robust form is a per-person full-face reference taken while the
+ * patient is already reading HANDS_READY, not a tighter absolute number.
  */
-export const PALM_FACING_MIN_SCORE = 0.15;
+export const PALM_FACING_MIN_SCORE = 0.46;
 
 /**
  * Minimum knuckle-to-tip distance, in palm-size units, for every finger.
