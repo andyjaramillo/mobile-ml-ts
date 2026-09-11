@@ -78,6 +78,7 @@ describe("motorRecorder", () => {
 		const line = buildCompactExport(state);
 		expect(line.startsWith("MH1|hands in box|n=1|")).toBe(true);
 		expect(line).toContain("be=wasm");
+		expect(line).toContain("crop=-");
 		expect(line).toContain("thr=650");
 		expect(line).toContain("res=800x450");
 		// maxScore 0.92 -> 920, 5 over threshold, 2 grouped, HANDS_READY is index 5.

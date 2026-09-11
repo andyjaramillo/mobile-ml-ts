@@ -17,6 +17,7 @@ interface Props {
 	maxScore: number;
 	aboveThresholdCount: number;
 	scoreThreshold: number;
+	regionMode: string;
 	backend: HandModelBackend;
 	modelReady: boolean;
 	tickHz: number;
@@ -28,7 +29,7 @@ function degrees(radians: number): string {
 	return `${((radians * 180) / Math.PI).toFixed(0)}deg`;
 }
 
-function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, scoreThreshold, backend, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
+function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, scoreThreshold, regionMode, backend, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
 	return (
 		<div className={embedded ? "mhh-embedded" : "mhh-root"}>
 			<style>{CSS}</style>
@@ -36,6 +37,10 @@ function MotorHandHud({ evaluation, reported, maxScore, aboveThresholdCount, sco
 			<div className="mhh-row">
 				<span>model</span>
 				<span>{modelReady ? backend ?? "ready" : "loading"}</span>
+			</div>
+			<div className="mhh-row">
+				<span>crop</span>
+				<span>{regionMode}</span>
 			</div>
 			<div className="mhh-row">
 				<span>tick</span>

@@ -37,6 +37,15 @@ let cachedLoad: Promise<HandModel | null> | null = null;
  * actual phone - no rebuild, no redeploy - is the difference between diagnosing that in
  * one take and guessing at it.
  */
+/** `?thr=0.45` overrides the score threshold, so a candidate can be tried on the phone. */
+function thresholdFromUrl(): number | undefined {
+	if (typeof window === "undefined") return undefined;
+	const raw = new URLSearchParams(window.location.search).get("thr");
+	if (raw === null) return undefined;
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) && parsed > 0 && parsed < 1 ? parsed : undefined;
+}
+
 function forcedBackendFromUrl(): HandModelBackend {
 	if (typeof window === "undefined") return null;
 	const requested = new URLSearchParams(window.location.search).get("ort");
@@ -53,7 +62,7 @@ export function useHandModel(enabled = true): HandModelHandle {
 		}
 
 		let cancelled = false;
-		if (!cachedLoad) cachedLoad = initHandModel(undefined, forcedBackendFromUrl() ?? undefined);
+		if (!cachedLoad) cachedLoad = initHandModel(thresholdFromUrl(), forcedBackendFromUrl() ?? undefined);
 		cachedLoad.then((model) => {
 			if (cancelled) return;
 			setHandle(

@@ -31,6 +31,12 @@ export const HAND_GUIDE_BOX = {
  * carried over from hand_model.ts's `radians < -1.0 && radians > -2.0`, i.e. roughly
  * +/- 29 degrees either side of vertical. UNCALIBRATED.
  */
+/**
+ * Fraction of extra width each half-crop takes, so a hand on the centre seam is whole in
+ * at least one of them.
+ */
+export const REGION_OVERLAP = 0.12;
+
 export const HAND_ALIGNMENT_RADIANS = { min: -2.0, max: -1.0 } as const;
 
 /** Motor is a selfie assessment: the preview is mirrored, so display x is flipped. */

@@ -197,6 +197,27 @@ function decodeDetections(
 	};
 }
 
+/** Shifts detections from a crop's own pixel space into the full frame's. */
+export function offsetDetections(detections: HandDetection[], dx: number, dy: number): HandDetection[] {
+	if (dx === 0 && dy === 0) return detections;
+	return detections.map((detection) => ({
+		...detection,
+		x: detection.x + dx,
+		y: detection.y + dy,
+		bbox: [detection.bbox[0] + dx, detection.bbox[1] + dy, detection.bbox[2] + dx, detection.bbox[3] + dy],
+		landmarks: detection.landmarks.map((point) => ({ x: point.x + dx, y: point.y + dy })),
+	}));
+}
+
+/**
+ * Collapses detections of the same hand. Needed a second time when regions overlap: the
+ * per-region grouping cannot see a duplicate produced by the neighbouring crop.
+ */
+export function groupDetections(detections: HandDetection[]): HandDetection[] {
+	if (detections.length <= 1) return detections;
+	return groupBoxes(detections, GROUP_DISTANCE_PX) as HandDetection[];
+}
+
 /**
  * One inference pass. `imageData` must be exactly HAND_MODEL_INPUT_SIZE square, with the
  * frame drawn into it using letterboxParams(frameWidth, frameHeight) - the decode undoes

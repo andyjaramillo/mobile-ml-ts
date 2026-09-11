@@ -9,7 +9,7 @@
 //
 // EXPORT FORMAT (v1, "MH1"):
 //
-//   MH1|<tag>|n=<count>|stride=<stride>|be=<backend>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|<samples>
+//   MH1|<tag>|n=<count>|stride=<stride>|be=<backend>|crop=<mode>|res=<W>x<H>|thr=<scoreMilli>|hz=<tickHz>|inf=<meanInferMs>|<samples>
 //
 // <samples> is `;`-joined, oldest first:
 //
@@ -64,6 +64,8 @@ export interface MotorRecorderState {
 	backend: string;
 	/** Recorded so a replay knows which threshold produced the grouped counts below. */
 	scoreThreshold: number;
+	/** Which framing produced these scores - comparing takes is the whole point. */
+	regionMode: string;
 }
 
 export function createMotorRecorderState(): MotorRecorderState {
@@ -77,6 +79,7 @@ export function createMotorRecorderState(): MotorRecorderState {
 		tickCounter: 0,
 		backend: "-",
 		scoreThreshold: 0,
+		regionMode: "-",
 	};
 }
 
@@ -162,6 +165,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
 		`be=${state.backend}`,
+		`crop=${state.regionMode}`,
 		`res=${last ? Math.round(last.frameWidth) : 0}x${last ? Math.round(last.frameHeight) : 0}`,
 		`thr=${Math.round(state.scoreThreshold * SCORE_MILLI)}`,
 		`hz=${mean(samples.map((sample) => sample.tickHz)).toFixed(1)}`,
