@@ -7,18 +7,24 @@
 //
 // Pure (no React) so the encoder is unit-testable without rendering.
 //
-// EXPORT FORMAT (v4, "MH4"):
+// EXPORT FORMAT (v5, "MH5"):
 //
-// v4 drops the palm detector's score fields, which no longer exist, and adds the three
+// v5 adds the inter-hand gap, which is a property of the PAIR and so has no place in the
+// per-hand fields. parseMotorExport still reads MH4, because the committed fixtures are
+// in it. v4 dropped the palm detector's score fields, which no longer exist, and adds the three
 // geometry measures the landmark model made possible. v3 made a line SELF-DESCRIBING: the
 // header carries the code list that <codeIndex> indexes into, so adding a check no longer
 // silently renumbers older recordings the way v1 -> v2 did. Costs ~250 chars once a line.
 //
-//   MH4|<tag>|n=<count>|stride=<stride>|be=<backend>|res=<W>x<H>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
+//   MH5|<tag>|n=<count>|stride=<stride>|be=<backend>|res=<W>x<H>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
 //
 // <samples> is `;`-joined, oldest first:
 //
-//   <codeIndex>:<hand>/<hand>
+//   <codeIndex>:<gap>:<hand>/<hand>
+//
+// <gap> is the horizontal gap between the two hands' bounds in palm-size units, scaled by
+// 1000 and signed - negative means they overlap - or "-" when fewer than two hands were
+// found. MH4 lines have no such field, hence the version bump rather than a silent widening.
 //
 // <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<facing>,<extension>,<separation>`.
 // Position is normalized to the frame so a recording survives a resolution change; the
@@ -43,6 +49,7 @@ const MAX_TAG_CHARS = 60;
 export const MAX_EXPORT_CHARS = 8192;
 
 const POS_MILLI = 1000;
+const GAP_MILLI = 1000;
 const FACING_MILLI = 1000;
 const EXTENSION_CENTI = 100;
 const SEPARATION_MILLI = 1000;
@@ -50,6 +57,7 @@ const SEPARATION_MILLI = 1000;
 export interface MotorRecorderSample {
 	code: MotorIssueCode;
 	hands: readonly EvaluatedHand[];
+	handGap: number | null;
 	frameWidth: number;
 	frameHeight: number;
 	inferenceMs: number;
@@ -147,7 +155,8 @@ function encodeHand(hand: EvaluatedHand, frameWidth: number, frameHeight: number
 
 function encodeSample(sample: MotorRecorderSample): string {
 	const hands = sample.hands.map((hand) => encodeHand(hand, sample.frameWidth, sample.frameHeight)).join("/");
-	return [MOTOR_ISSUE_CODES.indexOf(sample.code), hands].join(":");
+	const gap = sample.handGap === null ? "-" : String(Math.round(sample.handGap * GAP_MILLI));
+	return [MOTOR_ISSUE_CODES.indexOf(sample.code), gap, hands].join(":");
 }
 
 function mean(values: number[]): number {
@@ -161,7 +170,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 	const tag = state.scenarioTag.slice(0, MAX_TAG_CHARS).replace(/[|;:/]/g, " ").trim();
 
 	const header = [
-		"MH4",
+		"MH5",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
@@ -203,10 +212,13 @@ export interface ParsedHand {
 
 export interface ParsedSample {
 	code: string;
+	/** Null for MH4 lines, which predate the measure, and for ticks with under two hands. */
+	handGap: number | null;
 	hands: ParsedHand[];
 }
 
 export interface ParsedMotorExport {
+	version: "MH4" | "MH5";
 	tag: string;
 	stride: number;
 	backend: string;
@@ -245,7 +257,8 @@ function parseHand(encoded: string): ParsedHand {
 
 export function parseMotorExport(line: string): ParsedMotorExport {
 	const parts = line.trim().split("|");
-	if (parts[0] !== "MH4") throw new Error(`unsupported export format: ${parts[0]}`);
+	const version = parts[0];
+	if (version !== "MH4" && version !== "MH5") throw new Error(`unsupported export format: ${version}`);
 
 	const [width, height] = headerValue(parts, "res").split("x").map(Number);
 	const codes = headerValue(parts, "codes").split(",");
@@ -254,13 +267,19 @@ export function parseMotorExport(line: string): ParsedMotorExport {
 		.split(";")
 		.filter((chunk) => chunk.length > 0)
 		.map((chunk) => {
-			const separatorAt = chunk.indexOf(":");
-			const code = codes[Number(chunk.slice(0, separatorAt))];
-			const handsPart = chunk.slice(separatorAt + 1);
-			return { code, hands: handsPart ? handsPart.split("/").map(parseHand) : [] };
+			const fields = chunk.split(":");
+			const code = codes[Number(fields[0])];
+			const gapField = version === "MH5" ? fields[1] : "-";
+			const handsPart = fields[version === "MH5" ? 2 : 1] ?? "";
+			return {
+				code,
+				handGap: gapField === "-" || gapField === undefined ? null : Number(gapField) / GAP_MILLI,
+				hands: handsPart ? handsPart.split("/").map(parseHand) : [],
+			};
 		});
 
 	return {
+		version,
 		tag: parts[1],
 		stride: Number(headerValue(parts, "stride")),
 		backend: headerValue(parts, "be"),

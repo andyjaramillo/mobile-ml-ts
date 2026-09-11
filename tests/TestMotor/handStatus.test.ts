@@ -75,6 +75,8 @@ describe("evaluateHandFrame", () => {
 		expect(evaluate([handAt(PATIENT_LEFT_X, MID_Y, { curl: 0.8 }), handAt(PATIENT_RIGHT_X)]).code).toBe(
 			"LEFT_HAND_NOT_OPEN"
 		);
+		// pinch draws the fingertips together without straightening them, which is the
+		// posture the raw fingertip gap used to miss.
 		expect(evaluate([handAt(PATIENT_LEFT_X), handAt(PATIENT_RIGHT_X, MID_Y, { pinch: 1 })]).code).toBe(
 			"RIGHT_HAND_NOT_OPEN"
 		);

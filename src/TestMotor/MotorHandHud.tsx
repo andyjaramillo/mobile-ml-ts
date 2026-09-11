@@ -9,7 +9,7 @@
 import type { HandFrameEvaluation, MotorIssueCode } from "./handStatus";
 import {
 	FINGER_EXTENSION_MIN,
-	FINGER_SEPARATION_MIN,
+	FINGER_SPREAD_RATIO_MIN,
 	HAND_ALIGNMENT_RADIANS,
 	PALM_FACING_MIN_SCORE,
 } from "./motorConfig";
@@ -89,10 +89,14 @@ function MotorHandHud({ evaluation, reported, modelReady, tickHz, inferenceMs, e
 						</span>
 					</div>
 					<div className="mhh-row">
-						<span>separation</span>
-						<span className={hand.minFingerSeparation >= FINGER_SEPARATION_MIN ? "mhh-ok" : "mhh-bad"}>
-							{hand.minFingerSeparation.toFixed(3)} / {FINGER_SEPARATION_MIN}
+						<span>spread</span>
+						<span className={hand.fingerSpreadRatio >= FINGER_SPREAD_RATIO_MIN ? "mhh-ok" : "mhh-bad"}>
+							{hand.fingerSpreadRatio.toFixed(3)} / {FINGER_SPREAD_RATIO_MIN}
 						</span>
+					</div>
+					<div className="mhh-row">
+						<span>tip gap</span>
+						<span>{hand.minFingerSeparation.toFixed(3)}</span>
 					</div>
 					<div className="mhh-row">
 						<span>pointing</span>

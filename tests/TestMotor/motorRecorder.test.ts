@@ -23,6 +23,7 @@ function hand(overrides: Partial<EvaluatedHand> = {}): EvaluatedHand {
 		palmFacingScore: 0.42,
 		minFingerExtension: 0.96,
 		minFingerSeparation: 0.34,
+		fingerSpreadRatio: 0.354,
 		insideGuide: true,
 		fullyInFrame: true,
 		palmFacing: true,
@@ -36,6 +37,7 @@ function sample(overrides: Partial<MotorRecorderSample> = {}): MotorRecorderSamp
 	return {
 		code: "HANDS_READY",
 		hands: [hand(), hand({ x: 500, side: "right", handednessSide: "right" })],
+		handGap: 0.62,
 		frameWidth: 800,
 		frameHeight: 450,
 		inferenceMs: 12,
@@ -79,7 +81,7 @@ describe("motorRecorder", () => {
 		recordMotorTick(state, sample());
 
 		const line = buildCompactExport(state);
-		expect(line.startsWith("MH4|hands in box|n=1|")).toBe(true);
+		expect(line.startsWith("MH5|hands in box|n=1|")).toBe(true);
 		expect(line).toContain("be=mediapipe-gpu");
 		expect(line).toContain("res=800x450");
 
@@ -87,7 +89,7 @@ describe("motorRecorder", () => {
 		// against whatever the code happens to export today.
 		const codes = line.split("|").find((part) => part.startsWith("codes="))!.slice(6).split(",");
 		expect(codes).toContain("HANDS_READY");
-		expect(line).toContain(`|${codes.indexOf("HANDS_READY")}:`);
+		expect(line).toContain(`|${codes.indexOf("HANDS_READY")}:620:`);
 
 		// Left hand: flags 1+2+8+16+32+64 = 123. Right hand adds bit2 = 127.
 		// Geometry: facing 0.42 -> 420, extension 0.96 -> 96, separation 0.34 -> 340.
@@ -97,9 +99,9 @@ describe("motorRecorder", () => {
 	it("records whether MediaPipe handedness agreed, so a wrong swap is visible", () => {
 		const state = createMotorRecorderState();
 		startMotorRecording(state, 0);
-		recordMotorTick(state, sample({ hands: [hand({ sidesAgree: false, handednessSide: "right" })] }));
+		recordMotorTick(state, sample({ hands: [hand({ sidesAgree: false, handednessSide: "right" })], handGap: null }));
 		const encoded = buildCompactExport(state).split("|").pop()!;
-		const flags = Number(encoded.split(":")[1].split(",")[3]);
+		const flags = Number(encoded.split(":")[2].split(",")[3]);
 		expect(flags & 64).toBe(0);
 	});
 

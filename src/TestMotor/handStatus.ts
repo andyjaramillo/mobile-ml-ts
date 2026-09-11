@@ -8,7 +8,9 @@
 //
 // Pure: no React, no DOM, no MediaPipe. Everything it needs about the frame is passed in.
 import {
+	boundsGapNorm,
 	handBounds,
+	fingerSpreadRatio,
 	minFingerExtension,
 	minFingerSeparation,
 	palmCenter,
@@ -19,9 +21,10 @@ import type { Point2D } from "./handGeometry";
 import type { LandmarkedHand } from "./handLandmarker";
 import {
 	FINGER_EXTENSION_MIN,
-	FINGER_SEPARATION_MIN,
+	FINGER_SPREAD_RATIO_MIN,
 	FRAME_EDGE_MARGIN,
 	HAND_ALIGNMENT_RADIANS,
+	HAND_GAP_MIN,
 	HAND_GUIDE_BOX,
 	MIRROR_PREVIEW,
 	PALM_FACING_MIN_SCORE,
@@ -56,6 +59,15 @@ export const MOTOR_ISSUE_CODES = [
 	"BOTH_HANDS_OUTSIDE_GUIDE",
 	"LEFT_HAND_OUTSIDE_GUIDE",
 	"RIGHT_HAND_OUTSIDE_GUIDE",
+	/**
+	 * The hands' landmark bounds overlap - fingers of one hand are among the other's.
+	 * A pair property, so it has no left/right form: neither hand is individually wrong.
+	 *
+	 * Checked before palm facing and openness because overlapping hands degrade the
+	 * landmark estimates those two read, so a wrong verdict there is likely to be a
+	 * CONSEQUENCE of the overlap rather than a second independent problem.
+	 */
+	"HANDS_TOO_CLOSE",
 	/** The back of the hand is toward the camera, or it is turned too far edge-on to tell. */
 	"BOTH_PALMS_NOT_FACING_CAMERA",
 	"LEFT_PALM_NOT_FACING_CAMERA",
@@ -101,6 +113,7 @@ export interface EvaluatedHand {
 	palmFacingScore: number;
 	minFingerExtension: number;
 	minFingerSeparation: number;
+	fingerSpreadRatio: number;
 	insideGuide: boolean;
 	fullyInFrame: boolean;
 	palmFacing: boolean;
@@ -111,6 +124,8 @@ export interface EvaluatedHand {
 export interface HandFrameEvaluation {
 	handCount: number;
 	hands: EvaluatedHand[];
+	/** Null unless exactly two hands were found - see boundsGapNorm. */
+	handGap: number | null;
 	code: MotorIssueCode;
 }
 
@@ -179,6 +194,7 @@ export function evaluateHandFrame(
 		const facing = palmFacingScore(landmarks, guideSide === "right");
 		const extension = minFingerExtension(landmarks);
 		const separation = minFingerSeparation(landmarks);
+		const spread = fingerSpreadRatio(landmarks);
 		const pointing = pointingRadians(landmarks);
 
 		return {
@@ -192,6 +208,7 @@ export function evaluateHandFrame(
 			palmFacingScore: facing,
 			minFingerExtension: extension,
 			minFingerSeparation: separation,
+			fingerSpreadRatio: spread,
 			insideGuide: center.x >= box.minX && center.x <= box.maxX && center.y >= box.minY && center.y <= box.maxY,
 			fullyInFrame:
 				bounds.minX >= marginX &&
@@ -199,12 +216,19 @@ export function evaluateHandFrame(
 				bounds.minY >= marginY &&
 				bounds.maxY <= frameHeight - marginY,
 			palmFacing: facing >= PALM_FACING_MIN_SCORE,
-			open: extension >= FINGER_EXTENSION_MIN && separation >= FINGER_SEPARATION_MIN,
+			// Two conditions because they catch different failures: extension rejects a
+			// closed fist, spread rejects fingers held straight but together. Neither
+			// catches the other - across the takes a fist's spread RATIO reads high (a
+			// small gap over a very small length), which is why it is not used alone.
+			open: extension >= FINGER_EXTENSION_MIN && spread >= FINGER_SPREAD_RATIO_MIN,
 			upright: pointing > HAND_ALIGNMENT_RADIANS.min && pointing < HAND_ALIGNMENT_RADIANS.max,
 		};
 	});
 
-	return { handCount: evaluated.length, hands: evaluated, code: codeFor(evaluated) };
+	const handGap =
+		evaluated.length === 2 ? boundsGapNorm(evaluated[0].landmarks, evaluated[1].landmarks) : null;
+
+	return { handCount: evaluated.length, hands: evaluated, handGap, code: codeFor(evaluated, handGap) };
 }
 
 /** The three codes a per-hand check reports, picked by how many hands are failing it. */
@@ -250,7 +274,7 @@ function codeForFailing(failing: readonly EvaluatedHand[], codes: SideCodes): Mo
 // Ordered by what the patient should fix first: a hand that is not in shot has to be
 // found before anything can be said about how it is turned. Palm-facing precedes
 // openness because a hand seen from the back reads as closed whether it is or not.
-function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
+function codeFor(hands: EvaluatedHand[], handGap: number | null): MotorIssueCode {
 	const left = hands.filter((hand) => hand.side === "left").length;
 	const right = hands.filter((hand) => hand.side === "right").length;
 
@@ -262,9 +286,13 @@ function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
 	if (left === 0) return "LEFT_HAND_MISSING";
 	if (right === 0) return "RIGHT_HAND_MISSING";
 
+	const clipped = codeForFailing(hands.filter((hand) => !hand.fullyInFrame), NOT_FULLY_IN_FRAME);
+	if (clipped) return clipped;
+	const outside = codeForFailing(hands.filter((hand) => !hand.insideGuide), OUTSIDE_GUIDE);
+	if (outside) return outside;
+	if (handGap !== null && handGap < HAND_GAP_MIN) return "HANDS_TOO_CLOSE";
+
 	return (
-		codeForFailing(hands.filter((hand) => !hand.fullyInFrame), NOT_FULLY_IN_FRAME) ??
-		codeForFailing(hands.filter((hand) => !hand.insideGuide), OUTSIDE_GUIDE) ??
 		codeForFailing(hands.filter((hand) => !hand.palmFacing), PALM_NOT_FACING) ??
 		codeForFailing(hands.filter((hand) => !hand.open), NOT_OPEN) ??
 		codeForFailing(hands.filter((hand) => !hand.upright), NOT_UPRIGHT) ??

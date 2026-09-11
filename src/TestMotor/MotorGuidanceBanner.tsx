@@ -19,6 +19,7 @@ const MESSAGES: Record<MotorIssueCode, string> = {
 	BOTH_HANDS_OUTSIDE_GUIDE: "Move both hands into the dashed box",
 	LEFT_HAND_OUTSIDE_GUIDE: "Move your left hand into the dashed box",
 	RIGHT_HAND_OUTSIDE_GUIDE: "Move your right hand into the dashed box",
+	HANDS_TOO_CLOSE: "Move your hands further apart so they do not overlap",
 	BOTH_PALMS_NOT_FACING_CAMERA: "Turn both palms to face the camera",
 	LEFT_PALM_NOT_FACING_CAMERA: "Turn your left palm to face the camera",
 	RIGHT_PALM_NOT_FACING_CAMERA: "Turn your right palm to face the camera",

@@ -261,6 +261,7 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 						recordMotorTick(recorderStateRef.current, {
 							code: frameEvaluation.code,
 							hands: frameEvaluation.hands,
+							handGap: frameEvaluation.handGap,
 							frameWidth,
 							frameHeight,
 							inferenceMs: inferenceMsRef.current,

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseMotorExport } from "../../src/TestMotor/motorRecorder";
 import {
 	FINGER_EXTENSION_MIN,
-	FINGER_SEPARATION_MIN,
+	FINGER_SPREAD_RATIO_MIN,
 	PALM_FACING_MIN_SCORE,
 } from "../../src/TestMotor/motorConfig";
 
@@ -32,7 +32,9 @@ describe(`replay: ${FIXTURE}`, () => {
 	it("accepts every hand as open - spread AND relaxed", () => {
 		// The operator's call on this take: both postures are correct setups.
 		const rejected = hands.filter(
-			(hand) => hand.minFingerExtension < FINGER_EXTENSION_MIN || hand.minFingerSeparation < FINGER_SEPARATION_MIN
+			(hand) =>
+				hand.minFingerExtension < FINGER_EXTENSION_MIN ||
+				hand.minFingerSeparation / hand.minFingerExtension < FINGER_SPREAD_RATIO_MIN
 		);
 		expect(rejected).toEqual([]);
 	});
@@ -43,6 +45,18 @@ describe(`replay: ${FIXTURE}`, () => {
 		// Guards against a future edit that "fixes" a false rejection by moving the
 		// threshold to exactly the worst observed value, which would leave none.
 		expect(worst - FINGER_EXTENSION_MIN).toBeGreaterThan(0.05);
+	});
+
+	it("supplies the relaxed hand that made the raw fingertip gap unusable", () => {
+		// This take's worst tip gap (0.239) sits BELOW the other take's fingers-held-together
+		// worst (0.234) by 0.005 - the two classes touch, which is why openness is judged on
+		// the spread ratio instead. Kept as an assertion so the fact is not lost if either
+		// fixture is ever re-recorded.
+		const worstTipGap = Math.min(...hands.map((hand) => hand.minFingerSeparation));
+		expect(worstTipGap).toBeLessThan(0.25);
+		expect(worstTipGap / Math.min(...hands.map((hand) => hand.minFingerExtension))).toBeGreaterThan(
+			FINGER_SPREAD_RATIO_MIN
+		);
 	});
 
 	it("reads every palm as facing the camera, with the sign the right way round", () => {

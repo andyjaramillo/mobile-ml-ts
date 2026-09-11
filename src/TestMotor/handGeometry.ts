@@ -120,6 +120,29 @@ export function minFingerSeparation(landmarks: readonly Point2D[]): number {
 	return Math.min(...ADJACENT_TIPS.map(([a, b]) => distance(landmarks[a], landmarks[b]) / size));
 }
 
+/**
+ * Fingertip gap divided by finger length - approximately the ANGLE, in radians, that
+ * adjacent fingers open out by. Two fingers of length L parted by angle t have their tips
+ * about L*t apart, so this ratio is t and is independent of both palm size and how far
+ * away the hand is.
+ *
+ * This exists because the raw fingertip gap could not do the job: across the two
+ * committed takes, fingers deliberately held together reached 0.234 while relaxed hands
+ * with the fingers apart fell to 0.239 - the classes touch. Dividing by extension
+ * separates them by 0.057 instead, because holding fingers together also straightens
+ * them, which raises the denominator exactly when the numerator falls.
+ *
+ * Uses the MINIMUM of each measure, so the gap and the length may come from different
+ * fingers. Computing a ratio per adjacent pair and taking the minimum of those would be
+ * the stricter form; it cannot be fitted against the existing recordings, which carry
+ * only the two minima, so it needs a new take before it is worth changing.
+ */
+export function fingerSpreadRatio(landmarks: readonly Point2D[]): number {
+	const extension = minFingerExtension(landmarks);
+	if (extension === 0) return 0;
+	return minFingerSeparation(landmarks) / extension;
+}
+
 export interface HandBounds {
 	minX: number;
 	minY: number;
@@ -137,6 +160,23 @@ export function handBounds(landmarks: readonly Point2D[]): HandBounds {
 		if (point.y > maxY) maxY = point.y;
 	}
 	return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Horizontal gap between two hands' landmark bounds, in palm-size units. Negative when
+ * the boxes overlap, which is what interleaved fingers look like.
+ *
+ * Horizontal only: the assessment puts one hand on each side of the guide, so hands come
+ * together sideways. A vertical measure would also fire on one hand held above the other,
+ * which is a different posture nobody has asked to reject.
+ */
+export function boundsGapNorm(a: readonly Point2D[], b: readonly Point2D[]): number {
+	const boundsA = handBounds(a);
+	const boundsB = handBounds(b);
+	const [left, right] = boundsA.minX <= boundsB.minX ? [boundsA, boundsB] : [boundsB, boundsA];
+	const scale = (palmSize(a) + palmSize(b)) / 2;
+	if (scale === 0) return 0;
+	return (right.minX - left.maxX) / scale;
 }
 
 /** Palm centre: the centroid of the wrist and the four knuckles. */

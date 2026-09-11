@@ -78,15 +78,28 @@ export const PALM_FACING_MIN_SCORE = 0.15;
 export const FINGER_EXTENSION_MIN = 0.45;
 
 /**
- * Minimum gap between neighbouring fingertips, in palm-size units. Below this the fingers
- * are pressed together or overlapping.
+ * Minimum finger spread, as the fingertip-gap / finger-length ratio - roughly the angle
+ * in radians that adjacent fingers open out by. 0.35 is about 20 degrees.
  *
- * Left at its guessed value: in the take above it measured 0.24-0.47 and never came close
- * to binding, so that recording confirms it does not cause false rejections but says
- * nothing about whether it is tight enough to catch fingers held together. UNCALIBRATED
- * in the direction that matters.
+ * FITTED across both committed takes. Relaxed hands with the fingers apart measured
+ * 0.385-0.603; fingers deliberately held together measured 0.257-0.328. 0.35 sits in the
+ * gap, nearer the rejecting side so a borderline hand is accepted rather than nagged.
+ *
+ * This replaced a raw fingertip-gap threshold, which could not be made to work: on the
+ * same data those two classes were 0.005 apart, so any threshold separating them was
+ * within noise of misclassifying both. See fingerSpreadRatio for why dividing helps.
  */
-export const FINGER_SEPARATION_MIN = 0.12;
+export const FINGER_SPREAD_RATIO_MIN = 0.35;
+
+/**
+ * Minimum horizontal gap between the two hands' landmark bounds, in palm-size units.
+ *
+ * DEFINITIONAL rather than fitted: zero is the point where the boxes touch, so anything
+ * below it means the hands' landmarks genuinely overlap. Nothing to tune unless it turns
+ * out to be too strict for hands held legitimately close, which a recording would show -
+ * the measure is exported per tick for exactly that reason.
+ */
+export const HAND_GAP_MIN = 0;
 
 /**
  * MediaPipe documents handedness as assuming a MIRRORED (selfie-flipped) input image, and
