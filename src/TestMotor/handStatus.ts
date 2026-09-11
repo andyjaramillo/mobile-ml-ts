@@ -23,29 +23,37 @@ import {
 } from "./motorConfig";
 
 export const MOTOR_ISSUE_CODES = [
+	// Every per-hand check reports one of three codes: name the hand when only one is
+	// wrong, say "both" only when neither is right. A patient who is told "move your
+	// hands" while one is already correct has to work out which one themselves.
 	"BOTH_HANDS_MISSING",
 	/**
 	 * A hand is MISSING only when nothing was detected on its side of the guide. A hand
 	 * that is detected but sitting outside the box is a different problem with a different
-	 * remedy, and reports HANDS_OUTSIDE_GUIDE instead.
+	 * remedy, and reports the OUTSIDE_GUIDE codes instead.
 	 */
 	"LEFT_HAND_MISSING",
 	"RIGHT_HAND_MISSING",
 	/**
-	 * Detected, but its bounding box runs off the edge of the frame. Reported ahead of the
-	 * guide-box codes because a clipped hand usually also sits outside the box, and "part
-	 * of your hand is cut off" is the more specific instruction of the two.
+	 * Detected, but the palm's bounding box runs off the edge of the frame. Reported ahead
+	 * of the guide-box codes because a clipped hand usually also sits outside the box, and
+	 * "part of your hand is cut off" is the more specific instruction of the two.
 	 *
 	 * CAVEAT: this model returns a PALM box, not a whole-hand box, so a hand whose fingers
 	 * are cut off while the palm is fully visible does NOT trigger this. Catching that
 	 * needs the 21-landmark hand model.
 	 */
+	"BOTH_HANDS_NOT_FULLY_IN_FRAME",
 	"LEFT_HAND_NOT_FULLY_IN_FRAME",
 	"RIGHT_HAND_NOT_FULLY_IN_FRAME",
+	"BOTH_HANDS_OUTSIDE_GUIDE",
+	"LEFT_HAND_OUTSIDE_GUIDE",
+	"RIGHT_HAND_OUTSIDE_GUIDE",
+	"BOTH_HANDS_MISALIGNED",
+	"LEFT_HAND_MISALIGNED",
+	"RIGHT_HAND_MISALIGNED",
 	/** Someone else's hands are in shot, or one hand was detected twice on one side. */
 	"TOO_MANY_HANDS",
-	"HANDS_OUTSIDE_GUIDE",
-	"HANDS_MISALIGNED",
 	"HANDS_READY",
 	/** The window has not filled yet, or the detector has not run. Never a warning. */
 	"PENDING",
@@ -166,6 +174,36 @@ export function evaluateHandFrame(
 	return { handCount: hands.length, hands, code: codeFor(hands) };
 }
 
+/** The three codes a per-hand check reports, picked by how many hands are failing it. */
+interface SideCodes {
+	both: MotorIssueCode;
+	left: MotorIssueCode;
+	right: MotorIssueCode;
+}
+
+const NOT_FULLY_IN_FRAME: SideCodes = {
+	both: "BOTH_HANDS_NOT_FULLY_IN_FRAME",
+	left: "LEFT_HAND_NOT_FULLY_IN_FRAME",
+	right: "RIGHT_HAND_NOT_FULLY_IN_FRAME",
+};
+const OUTSIDE_GUIDE: SideCodes = {
+	both: "BOTH_HANDS_OUTSIDE_GUIDE",
+	left: "LEFT_HAND_OUTSIDE_GUIDE",
+	right: "RIGHT_HAND_OUTSIDE_GUIDE",
+};
+const MISALIGNED: SideCodes = {
+	both: "BOTH_HANDS_MISALIGNED",
+	left: "LEFT_HAND_MISALIGNED",
+	right: "RIGHT_HAND_MISALIGNED",
+};
+
+// Reached only with exactly one hand per side, so two failures means both of them.
+function codeForFailing(failing: readonly EvaluatedHand[], codes: SideCodes): MotorIssueCode | null {
+	if (failing.length === 0) return null;
+	if (failing.length > 1) return codes.both;
+	return failing[0].side === "left" ? codes.left : codes.right;
+}
+
 // Ordered by what the patient should fix first: a hand that is not in shot has to be
 // found before anything can be said about where it is pointing.
 function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
@@ -180,15 +218,12 @@ function codeFor(hands: EvaluatedHand[]): MotorIssueCode {
 	if (left === 0) return "LEFT_HAND_MISSING";
 	if (right === 0) return "RIGHT_HAND_MISSING";
 
-	// One hand per side from here on. When both are clipped only the left is named; the
-	// right surfaces on the next tick once the left is fixed, which reads better than a
-	// combined message the patient has to act on twice anyway.
-	const clipped = hands.find((hand) => !hand.fullyInFrame);
-	if (clipped) return clipped.side === "left" ? "LEFT_HAND_NOT_FULLY_IN_FRAME" : "RIGHT_HAND_NOT_FULLY_IN_FRAME";
-
-	if (!hands.every((hand) => hand.insideGuide)) return "HANDS_OUTSIDE_GUIDE";
-	if (!hands.every((hand) => hand.aligned)) return "HANDS_MISALIGNED";
-	return "HANDS_READY";
+	return (
+		codeForFailing(hands.filter((hand) => !hand.fullyInFrame), NOT_FULLY_IN_FRAME) ??
+		codeForFailing(hands.filter((hand) => !hand.insideGuide), OUTSIDE_GUIDE) ??
+		codeForFailing(hands.filter((hand) => !hand.aligned), MISALIGNED) ??
+		"HANDS_READY"
+	);
 }
 
 export function createHandStatusWindow(maxTicks: number = STATUS_WINDOW_TICKS): HandStatusWindow {

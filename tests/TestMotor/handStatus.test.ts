@@ -76,7 +76,7 @@ describe("evaluateHandFrame", () => {
 			FRAME_W,
 			FRAME_H
 		);
-		expect(result.code).toBe("HANDS_OUTSIDE_GUIDE");
+		expect(result.code).toBe("BOTH_HANDS_OUTSIDE_GUIDE");
 	});
 
 	it("reports TOO_MANY_HANDS when both palms land on the same side", () => {
@@ -151,6 +151,61 @@ describe("evaluateHandFrame", () => {
 		);
 	});
 
+	it("says 'both' only when neither hand is right", () => {
+		const box = guideBoxPixels(FRAME_W, FRAME_H);
+		const { y } = insideCentre();
+		const span = box.maxX - box.minX;
+
+		const bothClipped = evaluateHandFrame(
+			[detectionAt(10, y, UPRIGHT, 0.9, 60), detectionAt(FRAME_W - 10, y, UPRIGHT, 0.9, 60)],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(bothClipped.code).toBe("BOTH_HANDS_NOT_FULLY_IN_FRAME");
+
+		const aboveBox = box.minY - 40;
+		const bothOutside = evaluateHandFrame(
+			[detectionAt(box.minX + span * 0.25, aboveBox, UPRIGHT), detectionAt(box.minX + span * 0.75, aboveBox, UPRIGHT)],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(bothOutside.code).toBe("BOTH_HANDS_OUTSIDE_GUIDE");
+
+		const sideways = HAND_ALIGNMENT_RADIANS.max + 0.5;
+		const bothTurned = evaluateHandFrame(
+			[detectionAt(box.minX + span * 0.25, y, sideways), detectionAt(box.minX + span * 0.75, y, sideways)],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(bothTurned.code).toBe("BOTH_HANDS_MISALIGNED");
+	});
+
+	it("names only the failing hand when the other one is correct", () => {
+		const box = guideBoxPixels(FRAME_W, FRAME_H);
+		const { y } = insideCentre();
+		const span = box.maxX - box.minX;
+		const screenLeftGood = detectionAt(box.minX + span * 0.25, y, UPRIGHT);
+		const screenRightGood = detectionAt(box.minX + span * 0.75, y, UPRIGHT);
+		// Mirrored preview: screen-left is the patient's left hand.
+		const screenLeftSide = MIRROR_PREVIEW ? "LEFT" : "RIGHT";
+		const screenRightSide = MIRROR_PREVIEW ? "RIGHT" : "LEFT";
+
+		const leftOutside = evaluateHandFrame(
+			[detectionAt(box.minX + span * 0.25, box.minY - 40, UPRIGHT), screenRightGood],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(leftOutside.code).toBe(`${screenLeftSide}_HAND_OUTSIDE_GUIDE`);
+
+		const sideways = HAND_ALIGNMENT_RADIANS.max + 0.5;
+		const rightTurned = evaluateHandFrame(
+			[screenLeftGood, detectionAt(box.minX + span * 0.75, y, sideways)],
+			FRAME_W,
+			FRAME_H
+		);
+		expect(rightTurned.code).toBe(`${screenRightSide}_HAND_MISALIGNED`);
+	});
+
 	it("treats a clipped hand as present rather than missing", () => {
 		const box = guideBoxPixels(FRAME_W, FRAME_H);
 		const { y } = insideCentre();
@@ -162,6 +217,7 @@ describe("evaluateHandFrame", () => {
 		);
 		expect(result.code).not.toBe("LEFT_HAND_MISSING");
 		expect(result.code).not.toBe("RIGHT_HAND_MISSING");
+		expect(result.code).not.toBe("BOTH_HANDS_MISSING");
 	});
 
 	it("reports clipping ahead of a guide-box miss, since it is the more specific fix", () => {
@@ -189,7 +245,7 @@ describe("evaluateHandFrame", () => {
 		const span = box.maxX - box.minX;
 		const inside = detectionAt(box.minX + span * 0.25, y, UPRIGHT);
 		const outside = detectionAt(box.minX + span * 0.75, box.minY - 40, UPRIGHT);
-		expect(evaluateHandFrame([inside, outside], FRAME_W, FRAME_H).code).toBe("HANDS_OUTSIDE_GUIDE");
+		expect(evaluateHandFrame([inside, outside], FRAME_W, FRAME_H).code).toMatch(/_HAND_OUTSIDE_GUIDE$/);
 	});
 
 	it("reports HANDS_MISALIGNED when both are in the box but turned away", () => {
@@ -202,7 +258,7 @@ describe("evaluateHandFrame", () => {
 			FRAME_W,
 			FRAME_H
 		);
-		expect(result.code).toBe("HANDS_MISALIGNED");
+		expect(result.code).toBe("BOTH_HANDS_MISALIGNED");
 		expect(result.hands.every((hand) => hand.insideGuide)).toBe(true);
 	});
 
