@@ -7,16 +7,17 @@
 //
 // Pure (no React) so the encoder is unit-testable without rendering.
 //
-// EXPORT FORMAT (v5, "MH5"):
+// EXPORT FORMAT (v6, "MH6"):
 //
-// v5 adds the inter-hand gap, which is a property of the PAIR and so has no place in the
+// v6 adds the thumb-out score per hand, the one threshold with no recording behind it.
+// v5 added the inter-hand gap, which is a property of the PAIR and so has no place in the
 // per-hand fields. parseMotorExport still reads MH4, because the committed fixtures are
-// in it. v4 dropped the palm detector's score fields, which no longer exist, and adds the three
-// geometry measures the landmark model made possible. v3 made a line SELF-DESCRIBING: the
+// in it. v4 dropped the palm detector's score fields and added the geometry measures the
+// landmark model made possible. v3 made a line SELF-DESCRIBING: the
 // header carries the code list that <codeIndex> indexes into, so adding a check no longer
 // silently renumbers older recordings the way v1 -> v2 did. Costs ~250 chars once a line.
 //
-//   MH5|<tag>|n=<count>|stride=<stride>|be=<backend>|res=<W>x<H>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
+//   MH6|<tag>|n=<count>|stride=<stride>|be=<backend>|res=<W>x<H>|hz=<tickHz>|inf=<meanInferMs>|codes=<name,name,...>|<samples>
 //
 // <samples> is `;`-joined, oldest first:
 //
@@ -26,24 +27,25 @@
 // 1000 and signed - negative means they overlap - or "-" when fewer than two hands were
 // found. MH4 lines have no such field, hence the version bump rather than a silent widening.
 //
-// <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<facing>,<extension>,<separation>`.
+// <hand> is `<xMilli>,<yMilli>,<degrees>,<flags>,<facing>,<extension>,<separation>,<thumbOut>`.
 // Position is normalized to the frame so a recording survives a resolution change; the
 // angle is the wrist -> middle-knuckle direction in degrees. Flags are bit0=inside guide,
 // bit1=upright, bit2=right hand (0=left), bit3=whole hand inside frame, bit4=palm facing,
-// bit5=open, bit6=MediaPipe handedness agrees with which half of the guide the hand is in.
-// The hand list is empty when nothing was detected.
+// bit5=open, bit6=MediaPipe handedness agrees with which half of the guide the hand is in,
+// bit7=thumb clear of the palm. The hand list is empty when nothing was detected.
 //
-// facing/extension/separation are the RAW geometry behind three of those flags, scaled by
-// 1000/100/1000. Recording the raw value beside the verdict is the point: all three
-// thresholds are UNCALIBRATED, and a recording carrying only pass/fail could not be used
-// to fit them. Bit6 is here for the same reason - a wrong SWAP_MEDIAPIPE_HANDEDNESS and a
-// patient crossing their hands look identical live, and only the data tells them apart.
+// facing/extension/separation/thumbOut are the RAW geometry behind four of those flags,
+// scaled by 1000/100/1000/1000 and signed. Recording the raw value beside the verdict is
+// the point: a recording carrying only pass/fail cannot be used to move the threshold that
+// produced it, and every one of these was either fitted from a take or is still waiting for
+// one. Bit6 is here for the same reason - a wrong SWAP_MEDIAPIPE_HANDEDNESS and a patient
+// crossing their hands look identical live, and only the data tells them apart.
 import { MOTOR_ISSUE_CODES } from "./handStatus";
 import type { EvaluatedHand, MotorIssueCode } from "./handStatus";
 
 // Sized so a FULL buffer still fits MAX_EXPORT_CHARS without hitting the truncation
-// safety net: a two-hand sample now encodes to ~70 chars (three extra geometry measures
-// per hand), and 100 of them plus the header and the codes legend lands around 7.5k.
+// safety net: a two-hand sample encodes to ~70 chars, and 100 of them plus the header and
+// the codes legend lands around 7.5k.
 const MAX_SAMPLES = 100;
 const MAX_TAG_CHARS = 60;
 export const MAX_EXPORT_CHARS = 8192;
@@ -53,6 +55,7 @@ const GAP_MILLI = 1000;
 const FACING_MILLI = 1000;
 const EXTENSION_CENTI = 100;
 const SEPARATION_MILLI = 1000;
+const THUMB_MILLI = 1000;
 
 export interface MotorRecorderSample {
 	code: MotorIssueCode;
@@ -141,7 +144,8 @@ function encodeHand(hand: EvaluatedHand, frameWidth: number, frameHeight: number
 		(hand.fullyInFrame ? 8 : 0) |
 		(hand.palmFacing ? 16 : 0) |
 		(hand.open ? 32 : 0) |
-		(hand.sidesAgree ? 64 : 0);
+		(hand.sidesAgree ? 64 : 0) |
+		(hand.thumbClear ? 128 : 0);
 	return [
 		Math.round((hand.x / frameWidth) * POS_MILLI),
 		Math.round((hand.y / frameHeight) * POS_MILLI),
@@ -150,6 +154,7 @@ function encodeHand(hand: EvaluatedHand, frameWidth: number, frameHeight: number
 		Math.round(hand.palmFacingScore * FACING_MILLI),
 		Math.round(hand.minFingerExtension * EXTENSION_CENTI),
 		Math.round(hand.minFingerSeparation * SEPARATION_MILLI),
+		Math.round(hand.thumbOutScore * THUMB_MILLI),
 	].join(",");
 }
 
@@ -170,7 +175,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 	const tag = state.scenarioTag.slice(0, MAX_TAG_CHARS).replace(/[|;:/]/g, " ").trim();
 
 	const header = [
-		"MH5",
+		"MH6",
 		tag,
 		`n=${samples.length}`,
 		`stride=${state.stride}`,
@@ -200,6 +205,8 @@ export interface ParsedHand {
 	palmFacingScore: number;
 	minFingerExtension: number;
 	minFingerSeparation: number;
+	/** Null on MH4 and MH5 lines, which predate the measure. */
+	thumbOutScore: number | null;
 	/** The verdicts the RECORDING device reached, which a replay may disagree with. */
 	insideGuide: boolean;
 	upright: boolean;
@@ -208,6 +215,8 @@ export interface ParsedHand {
 	palmFacing: boolean;
 	open: boolean;
 	sidesAgree: boolean;
+	/** Null on MH4 and MH5 lines. */
+	thumbClear: boolean | null;
 }
 
 export interface ParsedSample {
@@ -218,7 +227,7 @@ export interface ParsedSample {
 }
 
 export interface ParsedMotorExport {
-	version: "MH4" | "MH5";
+	version: "MH4" | "MH5" | "MH6";
 	tag: string;
 	stride: number;
 	backend: string;
@@ -235,8 +244,8 @@ function headerValue(parts: string[], key: string): string {
 	return found ? found.slice(key.length + 1) : "";
 }
 
-function parseHand(encoded: string): ParsedHand {
-	const [x, y, degrees, flags, facing, extension, separation] = encoded.split(",").map(Number);
+function parseHand(encoded: string, hasThumb: boolean): ParsedHand {
+	const [x, y, degrees, flags, facing, extension, separation, thumb] = encoded.split(",").map(Number);
 	return {
 		x: x / POS_MILLI,
 		y: y / POS_MILLI,
@@ -245,6 +254,7 @@ function parseHand(encoded: string): ParsedHand {
 		palmFacingScore: facing / FACING_MILLI,
 		minFingerExtension: extension / EXTENSION_CENTI,
 		minFingerSeparation: separation / SEPARATION_MILLI,
+		thumbOutScore: hasThumb ? thumb / THUMB_MILLI : null,
 		insideGuide: (flags & 1) !== 0,
 		upright: (flags & 2) !== 0,
 		side: (flags & 4) !== 0 ? "right" : "left",
@@ -252,13 +262,18 @@ function parseHand(encoded: string): ParsedHand {
 		palmFacing: (flags & 16) !== 0,
 		open: (flags & 32) !== 0,
 		sidesAgree: (flags & 64) !== 0,
+		thumbClear: hasThumb ? (flags & 128) !== 0 : null,
 	};
 }
 
 export function parseMotorExport(line: string): ParsedMotorExport {
 	const parts = line.trim().split("|");
 	const version = parts[0];
-	if (version !== "MH4" && version !== "MH5") throw new Error(`unsupported export format: ${version}`);
+	if (version !== "MH4" && version !== "MH5" && version !== "MH6") {
+		throw new Error(`unsupported export format: ${version}`);
+	}
+	const hasGap = version !== "MH4";
+	const hasThumb = version === "MH6";
 
 	const [width, height] = headerValue(parts, "res").split("x").map(Number);
 	const codes = headerValue(parts, "codes").split(",");
@@ -269,12 +284,12 @@ export function parseMotorExport(line: string): ParsedMotorExport {
 		.map((chunk) => {
 			const fields = chunk.split(":");
 			const code = codes[Number(fields[0])];
-			const gapField = version === "MH5" ? fields[1] : "-";
-			const handsPart = fields[version === "MH5" ? 2 : 1] ?? "";
+			const gapField = hasGap ? fields[1] : "-";
+			const handsPart = fields[hasGap ? 2 : 1] ?? "";
 			return {
 				code,
 				handGap: gapField === "-" || gapField === undefined ? null : Number(gapField) / GAP_MILLI,
-				hands: handsPart ? handsPart.split("/").map(parseHand) : [],
+				hands: handsPart ? handsPart.split("/").map((hand) => parseHand(hand, hasThumb)) : [],
 			};
 		});
 

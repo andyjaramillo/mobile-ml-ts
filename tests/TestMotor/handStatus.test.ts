@@ -85,6 +85,32 @@ describe("evaluateHandFrame", () => {
 		).toBe("BOTH_HANDS_NOT_OPEN");
 	});
 
+	it("names the hand whose thumb is folded over the palm", () => {
+		expect(evaluate([handAt(PATIENT_LEFT_X, MID_Y, { thumbTuck: 1 }), handAt(PATIENT_RIGHT_X)]).code).toBe(
+			"LEFT_THUMB_OVER_PALM"
+		);
+		expect(evaluate([handAt(PATIENT_LEFT_X), handAt(PATIENT_RIGHT_X, MID_Y, { thumbTuck: 1 })]).code).toBe(
+			"RIGHT_THUMB_OVER_PALM"
+		);
+		expect(
+			evaluate([handAt(PATIENT_LEFT_X, MID_Y, { thumbTuck: 1 }), handAt(PATIENT_RIGHT_X, MID_Y, { thumbTuck: 1 })]).code
+		).toBe("BOTH_THUMBS_OVER_PALM");
+	});
+
+	it("accepts a thumb held up alongside the index finger", () => {
+		// The requirement is that the thumb not cover the palm, not that it be splayed, so
+		// a thumb resting against the index finger has to stay green.
+		const result = evaluate([handAt(PATIENT_LEFT_X, MID_Y, { thumbTuck: 0.25 }), handAt(PATIENT_RIGHT_X)]);
+		expect(result.code).toBe("HANDS_READY");
+	});
+
+	it("tells a closed fist to open rather than to move its thumb", () => {
+		// A fist puts the thumb over the palm too; "open your hand" fixes both, so the
+		// openness codes have to win.
+		const result = evaluate([handAt(PATIENT_LEFT_X, MID_Y, { curl: 1, thumbTuck: 1 }), handAt(PATIENT_RIGHT_X)]);
+		expect(result.code).toBe("LEFT_HAND_NOT_OPEN");
+	});
+
 	it("names the hand that is not pointing up", () => {
 		expect(evaluate([handAt(PATIENT_LEFT_X, MID_Y, { rotation: 1.4 }), handAt(PATIENT_RIGHT_X)]).code).toBe(
 			"LEFT_HAND_NOT_UPRIGHT"

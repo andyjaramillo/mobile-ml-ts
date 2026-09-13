@@ -47,6 +47,8 @@ export interface HandOptions {
 	curl?: number;
 	/** Pull the fingertips together horizontally. 0 = natural spread, 1 = all tips aligned. */
 	pinch?: number;
+	/** Fold the thumb across the palm. 0 = out to the side, 1 = tip at the pinky knuckle. */
+	thumbTuck?: number;
 	/** Rotation in radians applied about the wrist; 0 leaves the hand pointing up. */
 	rotation?: number;
 	scale?: number;
@@ -55,7 +57,16 @@ export interface HandOptions {
 
 /** Landmarks in DISPLAY space, which is what evaluateHandFrame works in after mirroring. */
 export function handLandmarks(options: HandOptions = {}): Point2D[] {
-	const { side = "right", palmAway = false, curl = 0, pinch = 0, rotation = 0, scale = 1, at = { x: 0, y: 0 } } = options;
+	const {
+		side = "right",
+		palmAway = false,
+		curl = 0,
+		pinch = 0,
+		thumbTuck = 0,
+		rotation = 0,
+		scale = 1,
+		at = { x: 0, y: 0 },
+	} = options;
 
 	const base: Point2D[] = new Array(21);
 	for (const [mcp, a, b, tip] of CHAINS) {
@@ -70,6 +81,11 @@ export function handLandmarks(options: HandOptions = {}): Point2D[] {
 		for (const [mcp, , , tip] of CHAINS) {
 			base[tip] = lerp(base[tip], base[mcp], curl);
 		}
+	}
+	if (thumbTuck > 0) {
+		// Swept toward the pinky knuckle, which is the path a thumb folding over the palm
+		// actually takes - it crosses the wrist-to-index-knuckle line partway.
+		base[LM.thumbTip] = lerp(base[LM.thumbTip], base[LM.pinkyMcp], thumbTuck);
 	}
 	if (pinch > 0) {
 		const middleX = base[LM.middleTip].x;

@@ -16,6 +16,7 @@ import {
 	palmCenter,
 	palmFacingScore,
 	pointingRadians,
+	thumbOutScore,
 } from "./handGeometry";
 import type { Point2D } from "./handGeometry";
 import type { LandmarkedHand } from "./handLandmarker";
@@ -31,6 +32,7 @@ import {
 	STATUS_HOLD_RATIO,
 	STATUS_WINDOW_TICKS,
 	SWAP_MEDIAPIPE_HANDEDNESS,
+	THUMB_OUT_MIN_SCORE,
 } from "./motorConfig";
 
 export const MOTOR_ISSUE_CODES = [
@@ -80,6 +82,14 @@ export const MOTOR_ISSUE_CODES = [
 	"BOTH_HANDS_NOT_OPEN",
 	"LEFT_HAND_NOT_OPEN",
 	"RIGHT_HAND_NOT_OPEN",
+	/**
+	 * The thumb is folded across the palm. Reported after the openness codes so a closed
+	 * fist - which also puts the thumb over the palm - is still answered with "open your
+	 * hand", the instruction that fixes both at once.
+	 */
+	"BOTH_THUMBS_OVER_PALM",
+	"LEFT_THUMB_OVER_PALM",
+	"RIGHT_THUMB_OVER_PALM",
 	"BOTH_HANDS_NOT_UPRIGHT",
 	"LEFT_HAND_NOT_UPRIGHT",
 	"RIGHT_HAND_NOT_UPRIGHT",
@@ -114,10 +124,12 @@ export interface EvaluatedHand {
 	minFingerExtension: number;
 	minFingerSeparation: number;
 	fingerSpreadRatio: number;
+	thumbOutScore: number;
 	insideGuide: boolean;
 	fullyInFrame: boolean;
 	palmFacing: boolean;
 	open: boolean;
+	thumbClear: boolean;
 	upright: boolean;
 }
 
@@ -195,6 +207,7 @@ export function evaluateHandFrame(
 		const extension = minFingerExtension(landmarks);
 		const separation = minFingerSeparation(landmarks);
 		const spread = fingerSpreadRatio(landmarks);
+		const thumbOut = thumbOutScore(landmarks, guideSide === "right");
 		const pointing = pointingRadians(landmarks);
 
 		return {
@@ -209,6 +222,7 @@ export function evaluateHandFrame(
 			minFingerExtension: extension,
 			minFingerSeparation: separation,
 			fingerSpreadRatio: spread,
+			thumbOutScore: thumbOut,
 			insideGuide: center.x >= box.minX && center.x <= box.maxX && center.y >= box.minY && center.y <= box.maxY,
 			fullyInFrame:
 				bounds.minX >= marginX &&
@@ -221,6 +235,7 @@ export function evaluateHandFrame(
 			// catches the other - across the takes a fist's spread RATIO reads high (a
 			// small gap over a very small length), which is why it is not used alone.
 			open: extension >= FINGER_EXTENSION_MIN && spread >= FINGER_SPREAD_RATIO_MIN,
+			thumbClear: thumbOut >= THUMB_OUT_MIN_SCORE,
 			upright: pointing > HAND_ALIGNMENT_RADIANS.min && pointing < HAND_ALIGNMENT_RADIANS.max,
 		};
 	});
@@ -257,6 +272,11 @@ const NOT_OPEN: SideCodes = {
 	both: "BOTH_HANDS_NOT_OPEN",
 	left: "LEFT_HAND_NOT_OPEN",
 	right: "RIGHT_HAND_NOT_OPEN",
+};
+const THUMB_OVER_PALM: SideCodes = {
+	both: "BOTH_THUMBS_OVER_PALM",
+	left: "LEFT_THUMB_OVER_PALM",
+	right: "RIGHT_THUMB_OVER_PALM",
 };
 const NOT_UPRIGHT: SideCodes = {
 	both: "BOTH_HANDS_NOT_UPRIGHT",
@@ -295,6 +315,7 @@ function codeFor(hands: EvaluatedHand[], handGap: number | null): MotorIssueCode
 	return (
 		codeForFailing(hands.filter((hand) => !hand.palmFacing), PALM_NOT_FACING) ??
 		codeForFailing(hands.filter((hand) => !hand.open), NOT_OPEN) ??
+		codeForFailing(hands.filter((hand) => !hand.thumbClear), THUMB_OVER_PALM) ??
 		codeForFailing(hands.filter((hand) => !hand.upright), NOT_UPRIGHT) ??
 		"HANDS_READY"
 	);

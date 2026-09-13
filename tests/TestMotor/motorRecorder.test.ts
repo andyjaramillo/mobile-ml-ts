@@ -24,10 +24,12 @@ function hand(overrides: Partial<EvaluatedHand> = {}): EvaluatedHand {
 		minFingerExtension: 0.96,
 		minFingerSeparation: 0.34,
 		fingerSpreadRatio: 0.354,
+		thumbOutScore: 0.71,
 		insideGuide: true,
 		fullyInFrame: true,
 		palmFacing: true,
 		open: true,
+		thumbClear: true,
 		upright: true,
 		...overrides,
 	};
@@ -81,7 +83,7 @@ describe("motorRecorder", () => {
 		recordMotorTick(state, sample());
 
 		const line = buildCompactExport(state);
-		expect(line.startsWith("MH5|hands in box|n=1|")).toBe(true);
+		expect(line.startsWith("MH6|hands in box|n=1|")).toBe(true);
 		expect(line).toContain("be=mediapipe-gpu");
 		expect(line).toContain("res=800x450");
 
@@ -91,9 +93,9 @@ describe("motorRecorder", () => {
 		expect(codes).toContain("HANDS_READY");
 		expect(line).toContain(`|${codes.indexOf("HANDS_READY")}:620:`);
 
-		// Left hand: flags 1+2+8+16+32+64 = 123. Right hand adds bit2 = 127.
-		// Geometry: facing 0.42 -> 420, extension 0.96 -> 96, separation 0.34 -> 340.
-		expect(line).toContain("500,667,-90,123,420,96,340/625,667,-90,127,420,96,340");
+		// Left hand: flags 1+2+8+16+32+64+128 = 251. Right hand adds bit2 = 255.
+		// Geometry: facing 420, extension 96, separation 340, thumb 710.
+		expect(line).toContain("500,667,-90,251,420,96,340,710/625,667,-90,255,420,96,340,710");
 	});
 
 	it("records whether MediaPipe handedness agreed, so a wrong swap is visible", () => {

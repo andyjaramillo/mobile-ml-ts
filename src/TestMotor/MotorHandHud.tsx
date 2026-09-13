@@ -10,6 +10,7 @@ import type { HandFrameEvaluation, MotorIssueCode } from "./handStatus";
 import {
 	FINGER_EXTENSION_MIN,
 	FINGER_SPREAD_RATIO_MIN,
+	THUMB_OUT_MIN_SCORE,
 	HAND_ALIGNMENT_RADIANS,
 	PALM_FACING_MIN_SCORE,
 } from "./motorConfig";
@@ -92,6 +93,12 @@ function MotorHandHud({ evaluation, reported, modelReady, tickHz, inferenceMs, e
 						<span>spread</span>
 						<span className={hand.fingerSpreadRatio >= FINGER_SPREAD_RATIO_MIN ? "mhh-ok" : "mhh-bad"}>
 							{hand.fingerSpreadRatio.toFixed(3)} / {FINGER_SPREAD_RATIO_MIN}
+						</span>
+					</div>
+					<div className="mhh-row">
+						<span>thumb out</span>
+						<span className={hand.thumbClear ? "mhh-ok" : "mhh-bad"}>
+							{hand.thumbOutScore.toFixed(3)} / {THUMB_OUT_MIN_SCORE}
 						</span>
 					</div>
 					<div className="mhh-row">

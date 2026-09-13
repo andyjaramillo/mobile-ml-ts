@@ -83,6 +83,31 @@ export function palmFacingScore(landmarks: readonly Point2D[], isRightHand: bool
 	return palmSignedArea(landmarks) * (isRightHand ? 1 : -1);
 }
 
+/**
+ * How far the thumb sits OUT to the side of the palm, in palm-size units. Positive when
+ * the thumb tip is on the outside of the line running from the wrist through the index
+ * knuckle - the palm's thumb-side edge - and negative once it crosses that line and lies
+ * over the palm.
+ *
+ * Nothing else here can see a tucked thumb. The thumb contributes only its LENGTH
+ * (minFingerExtension), which folding it across the palm barely changes, and it is
+ * excluded from minFingerSeparation because on an open hand it naturally sits close to
+ * the index finger. So a thumb over the palm read as a perfectly good hand.
+ *
+ * Sign is folded by handedness the same way palmFacingScore does it, so one threshold
+ * serves both hands. Like that measure it also inverts when the hand turns over, which is
+ * safe only because palm facing is checked first.
+ */
+export function thumbOutScore(landmarks: readonly Point2D[], isRightHand: boolean): number {
+	const wrist = landmarks[LM.wrist];
+	const index = landmarks[LM.indexMcp];
+	const thumb = landmarks[LM.thumbTip];
+	const size = palmSize(landmarks);
+	if (size === 0) return 0;
+	const cross = (index.x - wrist.x) * (thumb.y - wrist.y) - (index.y - wrist.y) * (thumb.x - wrist.x);
+	return (cross / (size * size)) * (isRightHand ? -1 : 1);
+}
+
 const FINGER_SPANS: ReadonlyArray<readonly [number, number]> = [
 	[LM.thumbCmc, LM.thumbTip],
 	[LM.indexMcp, LM.indexTip],

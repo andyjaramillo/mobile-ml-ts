@@ -105,6 +105,21 @@ export const FINGER_EXTENSION_MIN = 0.45;
 export const FINGER_SPREAD_RATIO_MIN = 0.35;
 
 /**
+ * Minimum thumbOutScore for the thumb to count as clear of the palm.
+ *
+ * DEFINITIONAL rather than fitted: zero is the line from the wrist through the index
+ * knuckle, which is the palm's own thumb-side edge, so a negative score means the thumb
+ * tip is literally over the palm. A thumb held up alongside the index finger scores just
+ * above zero and passes, which is the intent - the requirement is that the thumb not
+ * cover the palm, not that it be splayed.
+ *
+ * UNVALIDATED against a recording. The three committed takes predate the measure and
+ * carry no thumb geometry, so there is no evidence yet about how close a normal open
+ * hand sits to zero. If it turns out to hover near the line, this wants a margin.
+ */
+export const THUMB_OUT_MIN_SCORE = 0;
+
+/**
  * Minimum horizontal gap between the two hands' landmark bounds, in palm-size units.
  *
  * DEFINITIONAL rather than fitted: zero is the point where the boxes touch, so anything

@@ -8,6 +8,7 @@ import {
 	palmSignedArea,
 	palmSize,
 	pointingRadians,
+	thumbOutScore,
 } from "../../src/TestMotor/handGeometry";
 import { handLandmarks } from "./handFixtures";
 
@@ -124,5 +125,39 @@ describe("handBounds and palmCenter", () => {
 		const center = palmCenter(handLandmarks());
 		expect(center.y).toBeLessThan(0);
 		expect(center.y).toBeGreaterThan(-100);
+	});
+});
+
+describe("thumbOutScore", () => {
+	it("is positive for a thumb held out to the side of either hand", () => {
+		expect(thumbOutScore(handLandmarks({ side: "right" }), true)).toBeGreaterThan(0);
+		expect(thumbOutScore(handLandmarks({ side: "left" }), false)).toBeGreaterThan(0);
+	});
+
+	it("goes negative once the thumb crosses onto the palm", () => {
+		expect(thumbOutScore(handLandmarks({ side: "right", thumbTuck: 1 }), true)).toBeLessThan(0);
+		expect(thumbOutScore(handLandmarks({ side: "left", thumbTuck: 1 }), false)).toBeLessThan(0);
+	});
+
+	it("falls as the thumb folds further in", () => {
+		const out = thumbOutScore(handLandmarks(), true);
+		const half = thumbOutScore(handLandmarks({ thumbTuck: 0.5 }), true);
+		const tucked = thumbOutScore(handLandmarks({ thumbTuck: 1 }), true);
+		expect(half).toBeLessThan(out);
+		expect(tucked).toBeLessThan(half);
+	});
+
+	it("is scale-free and unaffected by rotation", () => {
+		expect(thumbOutScore(handLandmarks({ scale: 3 }), true)).toBeCloseTo(thumbOutScore(handLandmarks(), true), 5);
+		expect(thumbOutScore(handLandmarks({ rotation: 0.9 }), true)).toBeCloseTo(thumbOutScore(handLandmarks(), true), 5);
+	});
+
+	it("is invisible to the measures that already existed, which is why it was needed", () => {
+		const open = handLandmarks();
+		const tucked = handLandmarks({ thumbTuck: 1 });
+		// A tucked thumb keeps its length and is excluded from fingertip separation, so
+		// neither of the openness measures moves enough to notice.
+		expect(minFingerExtension(tucked)).toBeGreaterThan(0.45);
+		expect(minFingerSeparation(tucked)).toBeCloseTo(minFingerSeparation(open), 5);
 	});
 });
