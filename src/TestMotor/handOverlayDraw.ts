@@ -3,8 +3,8 @@
 // Draws what the detector actually returned: the hand skeleton, not a box. With 21
 // landmarks a box hides the information that matters - a curled finger or a hand turned
 // over looks identical inside one - and the skeleton is what makes a wrong threshold
-// obvious on the phone rather than only in the recording. Bones only, no joint dots:
-// on a phone-sized preview the dots crowd the fingers without adding a signal.
+// obvious on the phone rather than only in the recording. Bones only: at
+// phone-preview size a dot per landmark crowds the fingers it is drawn over.
 //
 // Everything it is handed is already in displayed-frame pixel space (see EvaluatedHand),
 // so unlike the palm-detector version it never relies on a CSS transform to line up with
