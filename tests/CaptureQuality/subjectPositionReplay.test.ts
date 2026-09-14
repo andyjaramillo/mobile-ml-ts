@@ -82,6 +82,15 @@ describe("subject recordings replayed through the real check", () => {
 		expect(lateral.weightedBoardToSubjectGapNorm as number).toBeLessThan(gate);
 	});
 
+	it("subject-in-front-of-board: green light across every spot the operator called usable", () => {
+		// Captured 2026-09-14 standing in front of the board rather than beside it, moving
+		// between the positions a patient is allowed to start from. Its gap runs 0.217-0.361,
+		// which the pre-2026-09-14 ceiling (0.30) rejected on 60 of 68 samples. This is the
+		// recording tooFarForwardGapNorm is now fitted to.
+		const { aggregate } = replay("subject-in-front-of-board");
+		expect(aggregate.activeCodes).not.toContain("SUBJECT_NOT_AT_START_LINE");
+	});
+
 	it("subject-far-back-lateral: too far back for the whole lateral sweep", () => {
 		// The recording that killed the area signal: the subject crosses the frame from edge
 		// to edge while staying too far back. Every part of that sweep must classify the same.
