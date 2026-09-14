@@ -609,12 +609,20 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// tuned toward either class.
 		tooFarBackGapNorm: 0.187,
 		tooFarBackClearGapNorm: 0.20,
-		// MEASURED from the walking-away recording, whose gap grows monotonically as the
-		// subject walks down the path: 0.217 at the line through 0.396 at the far end. The
-		// largest gap ever seen AT the line is 0.259 (still), so the ceiling has to sit above
-		// that; 0.30 clears it and still catches the walk-away well before it bottoms out.
-		tooFarForwardGapNorm: 0.30,
-		tooFarForwardClearGapNorm: 0.28,
+		// WIDENED 2026-09-14 (from 0.30/0.28) against a capture of the operator standing in
+		// front of the board across every spot they consider usable: gap 0.217 - 0.361, of
+		// which 60/68 samples read too-far-forward at the old ceiling. 0.39 clears that max
+		// with margin.
+		//
+		// The old ceiling was set to catch the subject walking away down the path (the same
+		// recording reads 0.396 at the far end), and this deliberately gives that up: catching
+		// a walk-away is NOT this check's job. The check exists to tell a patient "this is
+		// about right" before recording - it never gates the record button (see the fail-open
+		// rule) - and the model tolerates the spread inside this band, so the cost of
+		// accepting a too-forward stance is far lower than the cost of nagging someone who is
+		// standing somewhere perfectly usable.
+		tooFarForwardGapNorm: 0.39,
+		tooFarForwardClearGapNorm: 0.37,
 		// MEASURED: person detection fired on 100% of detection ticks in every recording with
 		// someone in frame, and 0% in subject-absent. Total separation, so this gate does easy
 		// work; 0.6 mirrors markerBoard.minimumFullSetWeight rather than being fitted.
