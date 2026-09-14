@@ -1,14 +1,7 @@
 // [Feature: Test Motor]
 //
-// Draws what the detector actually returned: the hand skeleton, not a box. With 21
-// landmarks a box hides the information that matters - a curled finger or a hand turned
-// over looks identical inside one - and the skeleton is what makes a wrong threshold
-// obvious on the phone rather than only in the recording. Bones only: at
-// phone-preview size a dot per landmark crowds the fingers it is drawn over.
-//
-// Everything it is handed is already in displayed-frame pixel space (see EvaluatedHand),
-// so unlike the palm-detector version it never relies on a CSS transform to line up with
-// a mirrored preview.
+// Landmarks arrive already in displayed-frame pixel space (see EvaluatedHand), so this
+// never relies on a CSS transform to line up with the mirrored preview.
 import { LM } from "./handGeometry";
 import type { EvaluatedHand } from "./handStatus";
 import { guideBoxPixels } from "./handStatus";
@@ -16,7 +9,7 @@ import { guideBoxPixels } from "./handStatus";
 const OK_COLOR = "#33FF00";
 const BAD_COLOR = "#FF3366";
 
-/** MediaPipe's standard hand connections: palm arch plus the five digits. */
+/** MediaPipe's standard 21-landmark hand topology. */
 const CONNECTIONS: ReadonlyArray<readonly [number, number]> = [
 	[0, 1], [1, 2], [2, 3], [3, 4],
 	[0, 5], [5, 6], [6, 7], [7, 8],
