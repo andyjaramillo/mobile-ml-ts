@@ -206,8 +206,20 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 			scheduleCameraReady();
 		}
 
+		// iOS resizes the viewport past the debounce below (chrome animation), so that one
+		// remeasure lands mid-animation and the overlays stay pinned to a stale box.
+		const resizeObserver =
+			typeof ResizeObserver !== "undefined"
+				? new ResizeObserver(() => {
+						if (isRecordingRef.current) return;
+						calculateVideoDimensions();
+					})
+				: null;
+		resizeObserver?.observe(videoElement);
+
 		return () => {
 			videoElement.removeEventListener("loadedmetadata", handleLoadedMetadata);
+			resizeObserver?.disconnect();
 			if (cameraReadyTimeoutRef.current) {
 				clearTimeout(cameraReadyTimeoutRef.current);
 				cameraReadyTimeoutRef.current = null;
