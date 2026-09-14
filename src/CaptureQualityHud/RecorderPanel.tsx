@@ -34,6 +34,8 @@ function RecorderPanel({ stateRef, topOffsetPx = 40, embedded = false }: Props) 
 	const [tagInput, setTagInput] = useState(stateRef.current.scenarioTag);
 	const [isRecording, setIsRecording] = useState(stateRef.current.recording);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "fallback">("idle");
+	const [sendStatus, setSendStatus] = useState<string | null>(null);
+	const [note, setNote] = useState("");
 	const [fallbackText, setFallbackText] = useState<string | null>(null);
 	// Bumped on a timer while recording so elapsed/count/char-count stay live without
 	// re-rendering on every ~30fps detector tick that mutates stateRef in place.
@@ -72,6 +74,7 @@ function RecorderPanel({ stateRef, topOffsetPx = 40, embedded = false }: Props) 
 			startCaptureRecording(state, performance.now());
 			setIsRecording(true);
 			setCopyStatus("idle");
+			setSendStatus(null);
 			setFallbackText(null);
 		}
 	}
@@ -80,7 +83,22 @@ function RecorderPanel({ stateRef, topOffsetPx = 40, embedded = false }: Props) 
 		clearCaptureRecording(state);
 		setIsRecording(false);
 		setCopyStatus("idle");
+		setSendStatus(null);
 		setFallbackText(null);
+	}
+
+	function handleSend() {
+		setSendStatus("sending");
+		fetch("/__capture", {
+			method: "POST",
+			body: JSON.stringify({ export: buildCompactExport(stateRef.current), note }),
+		})
+			.then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+			.then((result) => {
+				setSendStatus(`saved ${result.saved}`);
+				setNote("");
+			})
+			.catch((error) => setSendStatus(`failed: ${error.message}`));
 	}
 
 	// iOS Safari only honors navigator.clipboard.writeText as a direct result of a user
@@ -130,10 +148,27 @@ function RecorderPanel({ stateRef, topOffsetPx = 40, embedded = false }: Props) 
 				<button type="button" className="crp-btn" onClick={handleCopy} disabled={sampleCount === 0}>
 					{copyStatus === "copied" ? "Copied" : "Copy"}
 				</button>
+				<button type="button" className="crp-btn" onClick={handleSend} disabled={sampleCount === 0 || sendStatus === "sending"}>
+					Send
+				</button>
 				<button type="button" className="crp-btn" onClick={handleClear} disabled={sampleCount === 0 && !isRecording}>
 					Clear
 				</button>
 			</div>
+			<div className="crp-row">
+				<textarea
+					className="crp-note"
+					placeholder="notes for this take (where you stood, what you expect)"
+					value={note}
+					onChange={(e) => setNote(e.target.value)}
+					rows={2}
+				/>
+			</div>
+			{sendStatus !== null && (
+				<div className="crp-row">
+					<span className="crp-stat">{sendStatus}</span>
+				</div>
+			)}
 			{fallbackText !== null && (
 				<div className="crp-row crp-fallback">
 					<span className="crp-stat">Clipboard write failed - copy manually:</span>
@@ -145,6 +180,18 @@ function RecorderPanel({ stateRef, topOffsetPx = 40, embedded = false }: Props) 
 }
 
 const CSS = `
+	.crp-note {
+		width: 100%;
+		box-sizing: border-box;
+		font: inherit;
+		font-size: 12px;
+		padding: 4px 6px;
+		border-radius: 6px;
+		border: 1px solid rgba(255,255,255,0.25);
+		background: rgba(0,0,0,0.35);
+		color: inherit;
+		resize: vertical;
+	}
 	/* Rendered as a section of DebugHudStack rather than as its own floating box:
 	   drop the fixed positioning, the background and the width cap, and let the
 	   container own all three. */

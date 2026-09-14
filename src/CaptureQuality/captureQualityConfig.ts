@@ -609,12 +609,12 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// tuned toward either class.
 		tooFarBackGapNorm: 0.187,
 		tooFarBackClearGapNorm: 0.20,
-		// MEASURED from the walking-away recording, whose gap grows monotonically as the
-		// subject walks down the path: 0.217 at the line through 0.396 at the far end. The
-		// largest gap ever seen AT the line is 0.259 (still), so the ceiling has to sit above
-		// that; 0.30 clears it and still catches the walk-away well before it bottoms out.
-		tooFarForwardGapNorm: 0.30,
-		tooFarForwardClearGapNorm: 0.28,
+		// MEASURED 2026-09-14, operator in front of the board across every spot they called
+		// usable: gap 0.217-0.361, and 60/68 samples read too-far-forward at the old 0.30
+		// ceiling. Gives up catching a walk-away (0.396 at the far end) by design: the
+		// auto-start hold, not this bound, is what stops a walking subject arming a take.
+		tooFarForwardGapNorm: 0.39,
+		tooFarForwardClearGapNorm: 0.37,
 		// MEASURED: person detection fired on 100% of detection ticks in every recording with
 		// someone in frame, and 0% in subject-absent. Total separation, so this gate does easy
 		// work; 0.6 mirrors markerBoard.minimumFullSetWeight rather than being fitted.

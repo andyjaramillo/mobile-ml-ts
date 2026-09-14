@@ -131,10 +131,9 @@ function farBackPerson(): CaptureQualityBBox {
 	return personAt(500, 380);
 }
 
-// Sits HIGHER in frame (further down the path), opening the gap to (500-250)/768 = 0.326,
-// over the 0.30 boundary.
+// Sits HIGHER in frame, opening the gap to (500-190)/768 = 0.404, over the 0.39 ceiling.
 function farForwardPerson(): CaptureQualityBBox {
-	return personAt(500, 250);
+	return personAt(500, 190);
 }
 
 describe("aggregateSubjectPositionMetrics", () => {
@@ -363,7 +362,7 @@ describe("the opposite bound - subject too far forward", () => {
 	});
 
 	it("does not fire at the widest gap ever measured at the start line", () => {
-		// still's maximum was 0.259; the ceiling sits at 0.30. gap (500-301)/768 = 0.259.
+		// still's maximum was 0.259; the ceiling sits at 0.39. gap (500-301)/768 = 0.259.
 		const frames = Array.from({ length: 20 }, (_, i) => frame(i * 125, [personAt(500, 301)]));
 		const aggregate = evaluateSubjectPositionWindowAggregate(frames, config);
 		expect(aggregate.weightedBoardToSubjectGapNorm as number).toBeCloseTo(0.259, 2);
