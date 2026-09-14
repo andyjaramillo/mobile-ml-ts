@@ -53,6 +53,7 @@ interface Props {
 	/** Owned by the parent so one recording can span several takes. */
 	recorderStateRef: React.MutableRefObject<MotorRecorderState>;
 	patientView: boolean;
+	onSwitchDelegate?: () => void;
 	onRecorded: (blob: Blob, mimeType: string) => void;
 }
 
@@ -70,7 +71,17 @@ const VIDEO_CONSTRAINTS = {
 const GUIDE_OK_COLOR = "#33FF00";
 const GUIDE_BAD_COLOR = "#FF0000";
 
-function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindowRef, recorderStateRef, patientView, onRecorded }: Props) {
+function TestMotorCamera({
+	test,
+	testNumber,
+	totalTests,
+	handModel,
+	statusWindowRef,
+	recorderStateRef,
+	patientView,
+	onSwitchDelegate,
+	onRecorded,
+}: Props) {
 	const webcamRef = useRef<Webcam>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -279,13 +290,15 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 						const reported = pushHandStatus(statusWindowRef.current, frameEvaluation.code);
 						drawHandOverlay(overlayCtx, frameEvaluation.hands, frameWidth, frameHeight, debugVisible);
 
-						recorderStateRef.current.backend = "mediapipe-gpu";
+						recorderStateRef.current.backend = `mediapipe-${handModelRef.current.model?.delegate.toLowerCase() ?? "?"}`;
 						recordMotorTick(recorderStateRef.current, {
 							code: frameEvaluation.code,
 							hands: frameEvaluation.hands,
 							handGap: frameEvaluation.handGap,
 							frameWidth,
 							frameHeight,
+							sourceWidth: video.videoWidth,
+							sourceHeight: video.videoHeight,
 							inferenceMs: inferenceMsRef.current,
 							tickHz: tickHzRef.current,
 						});
@@ -511,6 +524,8 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 	}, [clearPhaseTimers, handleDataAvailable, finishRecording]);
 
 	const checkAvailable = handModel.status === "ready";
+	const sourceVideo = webcamRef.current?.video;
+	const sourceResolution = sourceVideo?.videoWidth ? `${sourceVideo.videoWidth}x${sourceVideo.videoHeight}` : undefined;
 	const isArmed = recordingPhase === "leadIn" || recordingPhase === "waiting";
 	const showSetupUi = !isRecording;
 	const showLeadIn = recordingPhase === "leadIn";
@@ -604,6 +619,9 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 						modelReady={checkAvailable}
 						tickHz={tickHzRef.current}
 						inferenceMs={inferenceMsRef.current}
+						delegate={handModel.model?.delegate ?? handModel.requestedDelegate}
+						onSwitchDelegate={onSwitchDelegate}
+						sourceResolution={sourceResolution}
 						embedded
 					/>
 				</DebugHudStack>

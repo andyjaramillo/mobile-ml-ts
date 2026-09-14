@@ -20,6 +20,9 @@ interface Props {
 	modelReady: boolean;
 	tickHz: number;
 	inferenceMs: number;
+	delegate: string;
+	onSwitchDelegate?: () => void;
+	sourceResolution?: string;
 	embedded?: boolean;
 }
 
@@ -27,14 +30,36 @@ function degrees(radians: number): string {
 	return `${((radians * 180) / Math.PI).toFixed(0)}deg`;
 }
 
-function MotorHandHud({ evaluation, reported, modelReady, tickHz, inferenceMs, embedded = false }: Props) {
+function MotorHandHud({
+	evaluation,
+	reported,
+	modelReady,
+	tickHz,
+	inferenceMs,
+	delegate,
+	onSwitchDelegate,
+	sourceResolution,
+	embedded = false,
+}: Props) {
 	return (
 		<div className={embedded ? "mhh-embedded" : "mhh-root"}>
 			<style>{CSS}</style>
 			<div className="mhh-title">HANDS</div>
 			<div className="mhh-row">
 				<span>model</span>
-				<span>{modelReady ? "mediapipe" : "loading"}</span>
+				<span>{modelReady ? `mediapipe ${delegate}` : "loading"}</span>
+			</div>
+			{onSwitchDelegate && (
+				<div className="mhh-row">
+					<span>delegate</span>
+					<button type="button" className="mhh-button" onClick={onSwitchDelegate}>
+						switch to {delegate === "CPU" ? "GPU" : "CPU"}
+					</button>
+				</div>
+			)}
+			<div className="mhh-row">
+				<span>camera</span>
+				<span>{sourceResolution ?? "-"}</span>
 			</div>
 			<div className="mhh-row">
 				<span>tick</span>
@@ -109,6 +134,15 @@ function MotorHandHud({ evaluation, reported, modelReady, tickHz, inferenceMs, e
 }
 
 const CSS = `
+	.mhh-button {
+		padding: 2px 6px;
+		border-radius: 4px;
+		border: 1px solid rgba(255,255,255,0.4);
+		background: rgba(255,255,255,0.15);
+		color: #fff;
+		font: inherit;
+		touch-action: manipulation;
+	}
 	.mhh-root {
 		position: fixed;
 		left: 8px;

@@ -7,14 +7,15 @@
 // Fails open. A model that never arrives leaves status "failed", the check silent, and
 // every other part of the flow untouched.
 import { useEffect, useState } from "react";
-import { initHandLandmarker } from "./handLandmarker";
-import type { HandLandmarkerHandle } from "./handLandmarker";
+import { defaultHandDelegate, initHandLandmarker } from "./handLandmarker";
+import type { HandDelegate, HandLandmarkerHandle } from "./handLandmarker";
 
 export type HandModelStatus = "loading" | "ready" | "failed";
 
 export interface HandModelHandle {
 	model: HandLandmarkerHandle | null;
 	status: HandModelStatus;
+	requestedDelegate: HandDelegate;
 }
 
 /**
@@ -27,28 +28,41 @@ export interface HandModelHandle {
  * Never released because it is deliberately session-scoped: the only consumer lives as
  * long as the page, and releasing it on a StrictMode teardown is precisely the bug above.
  */
-let cachedLoad: Promise<HandLandmarkerHandle | null> | null = null;
+const cachedLoads = new Map<HandDelegate, Promise<HandLandmarkerHandle | null>>();
 
-export function useHandModel(enabled = true): HandModelHandle {
-	const [handle, setHandle] = useState<HandModelHandle>({ model: null, status: "loading" });
+export function useHandModel(enabled = true, delegate: HandDelegate = defaultHandDelegate()): HandModelHandle {
+	const [handle, setHandle] = useState<HandModelHandle>({
+		model: null,
+		status: "loading",
+		requestedDelegate: delegate,
+	});
 
 	useEffect(() => {
 		if (!enabled) {
-			setHandle({ model: null, status: "failed" });
+			setHandle({ model: null, status: "failed", requestedDelegate: delegate });
 			return;
 		}
 
 		let cancelled = false;
-		if (!cachedLoad) cachedLoad = initHandLandmarker();
-		cachedLoad.then((model) => {
+		setHandle({ model: null, status: "loading", requestedDelegate: delegate });
+		let load = cachedLoads.get(delegate);
+		if (!load) {
+			load = initHandLandmarker(delegate);
+			cachedLoads.set(delegate, load);
+		}
+		load.then((model) => {
 			if (cancelled) return;
-			setHandle(model ? { model, status: "ready" } : { model: null, status: "failed" });
+			setHandle(
+				model
+					? { model, status: "ready", requestedDelegate: delegate }
+					: { model: null, status: "failed", requestedDelegate: delegate }
+			);
 		});
 
 		return () => {
 			cancelled = true;
 		};
-	}, [enabled]);
+	}, [enabled, delegate]);
 
 	return handle;
 }

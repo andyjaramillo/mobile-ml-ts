@@ -32,8 +32,22 @@ export interface LandmarkedHand {
 	handednessScore: number;
 }
 
+export type HandDelegate = "GPU" | "CPU";
+
 export interface HandLandmarkerHandle {
 	detector: HandLandmarker;
+	delegate: HandDelegate;
+}
+
+/**
+ * Android is CPU because hands go undetected there on Chrome AND Firefox while desktop and
+ * iOS are fine (2026-09-14), and the GPU delegate on the device's GL ES driver is the only
+ * path unique to those two - iOS Safari falls back to WASM instead. It fails silently, so
+ * nothing downstream can catch it.
+ */
+export function defaultHandDelegate(): HandDelegate {
+	if (typeof navigator === "undefined") return "GPU";
+	return /android/i.test(navigator.userAgent) ? "CPU" : "GPU";
 }
 
 async function preloadWasmGlue(wasmBase: string): Promise<void> {
@@ -53,16 +67,29 @@ async function preloadWasmGlue(wasmBase: string): Promise<void> {
 }
 
 /** Resolves to null on any failure; the caller must then run with the check silent. */
-export async function initHandLandmarker(): Promise<HandLandmarkerHandle | null> {
+export async function initHandLandmarker(
+	delegate: HandDelegate = defaultHandDelegate()
+): Promise<HandLandmarkerHandle | null> {
 	try {
 		await preloadWasmGlue(WASM_BASE);
 		const vision = await FilesetResolver.forVisionTasks(WASM_BASE);
-		const detector = await HandLandmarker.createFromOptions(vision, {
-			baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
-			runningMode: "VIDEO",
-			numHands: 2,
-		});
-		return { detector };
+		try {
+			const detector = await HandLandmarker.createFromOptions(vision, {
+				baseOptions: { modelAssetPath: MODEL_URL, delegate },
+				runningMode: "VIDEO",
+				numHands: 2,
+			});
+			return { detector, delegate };
+		} catch (error) {
+			if (delegate === "CPU") throw error;
+			console.warn("[handLandmarker] GPU delegate unavailable, falling back to CPU:", error);
+			const detector = await HandLandmarker.createFromOptions(vision, {
+				baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
+				runningMode: "VIDEO",
+				numHands: 2,
+			});
+			return { detector, delegate: "CPU" };
+		}
 	} catch (error) {
 		console.error("[handLandmarker] init failed:", error);
 		return null;

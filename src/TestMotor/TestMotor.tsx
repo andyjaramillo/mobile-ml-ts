@@ -14,6 +14,8 @@ import TestMotorCamera from "./TestMotorCamera";
 import TestMotorReview from "./TestMotorReview";
 import TestMotorDone from "./TestMotorDone";
 import useHandModel from "./useHandModel";
+import { defaultHandDelegate } from "./handLandmarker";
+import type { HandDelegate } from "./handLandmarker";
 import { createHandStatusWindow, resetHandStatusWindow } from "./handStatus";
 import { createMotorRecorderState } from "./motorRecorder";
 import { MOTOR_TESTS } from "./motorConfig";
@@ -38,7 +40,11 @@ function TestMotor({ patientView = false }: TestMotorProps) {
 	const [takeKey, setTakeKey] = useState(0);
 	const [review, setReview] = useState<ReviewState | null>(null);
 
-	const handModel = useHandModel();
+	const [delegate, setDelegate] = useState<HandDelegate>(() => {
+		const requested = new URLSearchParams(window.location.search).get("delegate")?.toUpperCase();
+		return requested === "GPU" || requested === "CPU" ? requested : defaultHandDelegate();
+	});
+	const handModel = useHandModel(true, delegate);
 	const statusWindowRef = useRef(createHandStatusWindow());
 	// Not reset per take, unlike the status window: an operator recording a calibration
 	// run wants the whole session in one Copy, not three fragments.
@@ -103,6 +109,7 @@ function TestMotor({ patientView = false }: TestMotorProps) {
 					statusWindowRef={statusWindowRef}
 					recorderStateRef={recorderStateRef}
 					patientView={patientView}
+					onSwitchDelegate={patientView ? undefined : () => setDelegate((d) => (d === "CPU" ? "GPU" : "CPU"))}
 					onRecorded={handleRecorded}
 				/>
 			)}
