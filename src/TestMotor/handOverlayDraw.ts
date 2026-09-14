@@ -3,7 +3,8 @@
 // Draws what the detector actually returned: the hand skeleton, not a box. With 21
 // landmarks a box hides the information that matters - a curled finger or a hand turned
 // over looks identical inside one - and the skeleton is what makes a wrong threshold
-// obvious on the phone rather than only in the recording.
+// obvious on the phone rather than only in the recording. Bones only, no joint dots:
+// on a phone-sized preview the dots crowd the fingers without adding a signal.
 //
 // Everything it is handed is already in displayed-frame pixel space (see EvaluatedHand),
 // so unlike the palm-detector version it never relies on a CSS transform to line up with
@@ -24,8 +25,6 @@ const CONNECTIONS: ReadonlyArray<readonly [number, number]> = [
 	[13, 17], [17, 18], [18, 19], [19, 20],
 	[0, 17],
 ];
-
-const FINGERTIPS: readonly number[] = [LM.thumbTip, LM.indexTip, LM.middleTip, LM.ringTip, LM.pinkyTip];
 
 export function drawHandOverlay(
 	ctx: CanvasRenderingContext2D,
@@ -52,6 +51,8 @@ export function drawHandOverlay(
 
 		ctx.strokeStyle = color;
 		ctx.lineWidth = 2;
+		ctx.lineCap = "round";
+		ctx.lineJoin = "round";
 		ctx.beginPath();
 		for (const [from, to] of CONNECTIONS) {
 			ctx.moveTo(points[from].x, points[from].y);
@@ -59,16 +60,7 @@ export function drawHandOverlay(
 		}
 		ctx.stroke();
 
-		// Fingertips drawn larger than the other joints: they are what the openness and
-		// separation thresholds are measured between.
 		ctx.fillStyle = color;
-		for (let i = 0; i < points.length; i++) {
-			const radius = FINGERTIPS.includes(i) ? 5 : 3;
-			ctx.beginPath();
-			ctx.arc(points[i].x, points[i].y, radius, 0, 2 * Math.PI);
-			ctx.fill();
-		}
-
 		ctx.font = "bold 14px system-ui, sans-serif";
 		ctx.fillText(hand.side, points[LM.wrist].x - 12, points[LM.wrist].y + 20);
 	}
