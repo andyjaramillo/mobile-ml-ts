@@ -40,6 +40,8 @@ function sample(overrides: Partial<MotorRecorderSample> = {}): MotorRecorderSamp
 		handGap: 0.62,
 		frameWidth: 800,
 		frameHeight: 450,
+		sourceWidth: 1280,
+		sourceHeight: 720,
 		inferenceMs: 12,
 		tickHz: 15,
 		...overrides,
@@ -84,6 +86,7 @@ describe("motorRecorder", () => {
 		expect(line.startsWith("MH5|hands in box|n=1|")).toBe(true);
 		expect(line).toContain("be=mediapipe-gpu");
 		expect(line).toContain("res=800x450");
+		expect(line).toContain("src=1280x720");
 
 		// A line carries its own legend, so the index is read against this list rather than
 		// against whatever the code happens to export today.

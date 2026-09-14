@@ -60,6 +60,8 @@ export interface MotorRecorderSample {
 	handGap: number | null;
 	frameWidth: number;
 	frameHeight: number;
+	sourceWidth: number;
+	sourceHeight: number;
 	inferenceMs: number;
 	tickHz: number;
 }
@@ -176,6 +178,7 @@ export function buildCompactExport(state: MotorRecorderState): string {
 		`stride=${state.stride}`,
 		`be=${state.backend}`,
 		`res=${last ? Math.round(last.frameWidth) : 0}x${last ? Math.round(last.frameHeight) : 0}`,
+		`src=${last ? Math.round(last.sourceWidth) : 0}x${last ? Math.round(last.sourceHeight) : 0}`,
 		`hz=${mean(samples.map((sample) => sample.tickHz)).toFixed(1)}`,
 		`inf=${Math.round(mean(samples.map((sample) => sample.inferenceMs)))}`,
 		`codes=${MOTOR_ISSUE_CODES.join(",")}`,
@@ -224,6 +227,8 @@ export interface ParsedMotorExport {
 	backend: string;
 	frameWidth: number;
 	frameHeight: number;
+	sourceWidth: number;
+	sourceHeight: number;
 	tickHz: number;
 	inferenceMs: number;
 	codes: string[];
@@ -261,6 +266,9 @@ export function parseMotorExport(line: string): ParsedMotorExport {
 	if (version !== "MH4" && version !== "MH5") throw new Error(`unsupported export format: ${version}`);
 
 	const [width, height] = headerValue(parts, "res").split("x").map(Number);
+	// Absent from every line written before 2026-09-14, so read it tolerantly.
+	const sourceField = headerValue(parts, "src");
+	const [sourceWidth = 0, sourceHeight = 0] = sourceField ? sourceField.split("x").map(Number) : [];
 	const codes = headerValue(parts, "codes").split(",");
 
 	const samples = parts[parts.length - 1]
@@ -285,6 +293,8 @@ export function parseMotorExport(line: string): ParsedMotorExport {
 		backend: headerValue(parts, "be"),
 		frameWidth: width,
 		frameHeight: height,
+		sourceWidth,
+		sourceHeight,
 		tickHz: Number(headerValue(parts, "hz")),
 		inferenceMs: Number(headerValue(parts, "inf")),
 		codes,
