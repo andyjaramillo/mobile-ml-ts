@@ -417,11 +417,115 @@ export interface SamplingConfig {
 	postRecordingSampleWindow: "middle" | "start" | "end";
 }
 
+/**
+ * The box the patient must put both hands inside, as a fraction of the DISPLAYED frame,
+ * plus whether that frame is mirrored. Grouped together because both describe what the
+ * patient is looking at rather than how strict a check is: a profile that changes the
+ * overlay changes the box, and a profile shooting on the rear camera changes the mirror.
+ */
+export interface HandGuideConfig {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	/**
+	 * True when the preview is flipped for the patient (react-webcam's `mirrored`, i.e. any
+	 * selfie-camera assessment). Landmarks arrive in the raw sensor frame, so the check
+	 * flips them once at its boundary - see handPoseCheck's toDisplaySpace. Getting this
+	 * wrong swaps every left/right instruction the bar gives.
+	 */
+	mirrorPreview: boolean;
+}
+
+/**
+ * Motor: Hand framing, taken from the motor_tracking overlay's 839x520 artboard.
+ *
+ * WIDENED 2026-09-10 from the source asset's 0.134-0.828 (x=112.5 w=582 in that artboard)
+ * to 0.06-0.94, because two hands held at a natural distance apart did not fit.
+ */
+export const HAND_GUIDE: HandGuideConfig = {
+	x: 0.06,
+	y: 239.5 / 520,
+	width: 0.88,
+	height: 245 / 520,
+	mirrorPreview: true,
+};
+
+/**
+ * Hand-pose thresholds for the motor assessments. Ported from
+ * mobile-ml-ts/src/TestMotor/motorConfig.ts, where each carries its own FITTED or
+ * UNCALIBRATED note; the fitted ones were measured against the recordings committed in
+ * that repo's tests/TestMotor/fixtures, NOT against a CurveAssure recording.
+ */
+export interface HandPoseThresholds {
+	/**
+	 * palmFacingScore above this counts as the palm facing the camera. FITTED against
+	 * palms-rotating-inward.mh5 (2026-09-11): hands the operator accepted scored
+	 * 0.468-0.621, the first hands to go wrong under rotation at most 0.455.
+	 *
+	 * The previous value of 0.15 produced the WRONG instruction rather than none - a
+	 * rotating palm foreshortens the fingers, so fingerSpreadRatio collapsed first and the
+	 * patient was told to spread fingers they had already spread. Palm facing is checked
+	 * before openness for that reason, which only works if this threshold fires first.
+	 */
+	palmFacingMinScore: number;
+	/**
+	 * Minimum knuckle-to-tip distance for every finger, in palm-size units. FITTED against
+	 * palms-forward-spread-then-natural.mh4 (2026-09-10): spread fingers 0.73-0.84, relaxed
+	 * but open 0.52-0.69. The UPPER side is calibrated, the lower is not - no recording of a
+	 * closed fist exists yet, so do not lower this without one.
+	 */
+	fingerExtensionMin: number;
+	/**
+	 * Minimum fingertip-gap / finger-length ratio - roughly the angle in radians adjacent
+	 * fingers open by, so 0.35 is about 20 degrees. FITTED across both takes: open hands
+	 * 0.385-0.603, fingers deliberately together 0.257-0.328. A raw fingertip gap could not
+	 * do this job - those two classes sat 0.005 apart on the same data.
+	 */
+	fingerSpreadRatioMin: number;
+	/**
+	 * Minimum horizontal gap between the two hands' landmark bounds, in palm-size units.
+	 * DEFINITIONAL rather than fitted: zero is where the boxes touch, so below it the
+	 * landmarks genuinely overlap.
+	 */
+	handGapMin: number;
+	/**
+	 * How far inside the frame edge all 21 landmarks must sit to count as fully in view, as
+	 * a fraction of the frame. UNCALIBRATED, small and positive: landmarks are estimated
+	 * rather than observed at the boundary.
+	 */
+	frameEdgeMargin: number;
+	/**
+	 * Accepted pointing direction in radians (atan2, y down), wrist -> middle knuckle;
+	 * -PI/2 is straight up. UNCALIBRATED, carried over from the palm detector's band of
+	 * roughly +/- 29 degrees either side of vertical.
+	 */
+	alignmentRadiansMin: number;
+	alignmentRadiansMax: number;
+	/**
+	 * Status smoothing: a new code must hold for statusHoldRatio of a statusWindowTicks-long
+	 * window before it replaces the one on screen, so a single dropped detection cannot make
+	 * the bar jump. Carried over from the palm detector's 70%-of-buffer rule, which only ever
+	 * guarded its countdown; here it governs every transition.
+	 */
+	statusWindowTicks: number;
+	statusHoldRatio: number;
+	/**
+	 * MediaPipe documents handedness as assuming a mirrored input image, and the detector is
+	 * fed the raw sensor frame - which reads as "swap the label". MEASURED FALSE: in the
+	 * 2026-09-10 take all 92 hands disagreed with the guide half on both hands at once, a
+	 * systematic inversion. The side the patient is told about comes from the guide half
+	 * regardless; this flag only drives the cross-check that made that visible.
+	 */
+	swapMediaPipeHandedness: boolean;
+}
+
 export interface CaptureQualityConfig {
 	markerBoard: MarkerBoardThresholds;
 	subjectPosition: SubjectPositionThresholds;
 	multiPerson: MultiPersonThresholds;
 	lighting: LightingThresholds;
+	handPose: HandPoseThresholds;
 	duration: DurationThresholds;
 	sampling: SamplingConfig;
 }
@@ -609,18 +713,10 @@ export const DEFAULTS: CaptureQualityConfig = {
 		// tuned toward either class.
 		tooFarBackGapNorm: 0.187,
 		tooFarBackClearGapNorm: 0.20,
-		// WIDENED 2026-09-14 (from 0.30/0.28) against a capture of the operator standing in
-		// front of the board across every spot they consider usable: gap 0.217 - 0.361, of
-		// which 60/68 samples read too-far-forward at the old ceiling. 0.39 clears that max
-		// with margin.
-		//
-		// The old ceiling was set to catch the subject walking away down the path (the same
-		// recording reads 0.396 at the far end), and this deliberately gives that up: catching
-		// a walk-away is NOT this check's job. The check exists to tell a patient "this is
-		// about right" before recording - it never gates the record button (see the fail-open
-		// rule) - and the model tolerates the spread inside this band, so the cost of
-		// accepting a too-forward stance is far lower than the cost of nagging someone who is
-		// standing somewhere perfectly usable.
+		// MEASURED 2026-09-14, operator in front of the board across every spot they called
+		// usable: gap 0.217-0.361, and 60/68 samples read too-far-forward at the old 0.30
+		// ceiling. Gives up catching a walk-away (0.396 at the far end) by design: the
+		// auto-start hold, not this bound, is what stops a walking subject arming a take.
 		tooFarForwardGapNorm: 0.39,
 		tooFarForwardClearGapNorm: 0.37,
 		// MEASURED: person detection fired on 100% of detection ticks in every recording with
@@ -687,6 +783,18 @@ export const DEFAULTS: CaptureQualityConfig = {
 		cellFlatContrastMax: 10,
 		flatCellFractionThreshold: 0.2,
 		flatCellFractionClearThreshold: 0.15,
+	},
+	handPose: {
+		palmFacingMinScore: 0.46,
+		fingerExtensionMin: 0.45,
+		fingerSpreadRatioMin: 0.35,
+		handGapMin: 0,
+		frameEdgeMargin: 0.01,
+		alignmentRadiansMin: -2.0,
+		alignmentRadiansMax: -1.0,
+		statusWindowTicks: 8,
+		statusHoldRatio: 0.7,
+		swapMediaPipeHandedness: false,
 	},
 	duration: {
 		minimumDurationSec: 1.0, // UNCALIBRATED GUESS - no prototype precedent; see per-assessment overrides below for why this needs to vary by assessment
@@ -803,6 +911,7 @@ export function resolveCaptureQualityConfig(assessmentKey: string): CaptureQuali
 		subjectPosition: mergeCategory(DEFAULTS.subjectPosition, override?.subjectPosition),
 		multiPerson: mergeCategory(DEFAULTS.multiPerson, override?.multiPerson),
 		lighting: mergeCategory(DEFAULTS.lighting, override?.lighting),
+		handPose: mergeCategory(DEFAULTS.handPose, override?.handPose),
 		duration: mergeCategory(DEFAULTS.duration, override?.duration),
 		sampling: mergeCategory(DEFAULTS.sampling, override?.sampling),
 	};

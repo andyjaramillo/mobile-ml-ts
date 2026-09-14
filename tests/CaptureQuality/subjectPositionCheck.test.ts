@@ -131,8 +131,7 @@ function farBackPerson(): CaptureQualityBBox {
 	return personAt(500, 380);
 }
 
-// Sits HIGHER in frame (further down the path), opening the gap to (500-190)/768 = 0.404,
-// over the 0.39 boundary.
+// Sits HIGHER in frame, opening the gap to (500-190)/768 = 0.404, over the 0.39 ceiling.
 function farForwardPerson(): CaptureQualityBBox {
 	return personAt(500, 190);
 }

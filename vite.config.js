@@ -10,8 +10,7 @@ import { resolve } from 'node:path'
 // certificate blocking automated navigation.
 const useHttps = process.env.VITE_NO_HTTPS !== '1'
 
-// Dev-only: POST a compact export here and it lands in calibration/ as a replayable
-// file, so a capture taken on the phone never has to be copied off it by hand.
+// Dev-only sink so a capture taken on the phone never has to be copied off it by hand.
 function captureSink() {
   return {
     name: 'capture-sink',
@@ -47,8 +46,8 @@ function captureSink() {
           const name = `${stamp}-${tag}.${version.toLowerCase()}.txt`
           const dir = resolve(import.meta.dirname, 'calibration')
           mkdirSync(dir, { recursive: true })
-          // The parser skips any line without a CQ prefix, so the note rides along in the
-          // same file rather than in a sidecar that can get separated from its recording.
+          // scripts/calibrate/parse.ts skips any line without a CQ prefix, so the note can
+          // ride in the recording's own file instead of a sidecar.
           const noteBlock = note ? note.split(/\r?\n/).map((l) => `# ${l}`).join('\n') + '\n' : ''
           writeFileSync(resolve(dir, name), noteBlock + line + '\n')
           res.setHeader('content-type', 'application/json')

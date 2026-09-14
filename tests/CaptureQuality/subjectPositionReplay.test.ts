@@ -83,10 +83,8 @@ describe("subject recordings replayed through the real check", () => {
 	});
 
 	it("subject-in-front-of-board: green light across every spot the operator called usable", () => {
-		// Captured 2026-09-14 standing in front of the board rather than beside it, moving
-		// between the positions a patient is allowed to start from. Its gap runs 0.217-0.361,
-		// which the pre-2026-09-14 ceiling (0.30) rejected on 60 of 68 samples. This is the
-		// recording tooFarForwardGapNorm is now fitted to.
+		// Gap 0.217-0.361, which the old 0.30 ceiling rejected on 60/68 samples: this is the
+		// recording tooFarForwardGapNorm is fitted to.
 		const { aggregate } = replay("subject-in-front-of-board");
 		expect(aggregate.activeCodes).not.toContain("SUBJECT_NOT_AT_START_LINE");
 	});
