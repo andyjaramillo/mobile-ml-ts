@@ -159,6 +159,17 @@ export const LEAD_IN_COUNTDOWN_FROM = 3;
 export const GO_MESSAGE = "Go!";
 
 /**
+ * Measured on the RAW per-tick code, not the smoothed one: a sustained second of failure
+ * already absorbs the dropped detection STATUS_HOLD_RATIO exists for, and stacking the
+ * two would put the cancel ~1.5s behind the patient's hands. UNCALIBRATED.
+ */
+export const LEAD_IN_POSTURE_GRACE_MS = 1000;
+
+export const LEAD_IN_RESUME_HOLD_MS = 500;
+
+export const LEAD_IN_MONITOR_INTERVAL_MS = 100;
+
+/**
  * The three takes of Motor: Hand (home), in order, from
  * HandTrackingAtHomeAssessmentJSON.tsx. One recording each, no repeat trials.
  */

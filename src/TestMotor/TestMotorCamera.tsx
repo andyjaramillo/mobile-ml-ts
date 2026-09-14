@@ -5,9 +5,8 @@
 // machine and MediaRecorder configuration TestGaitCamera uses (both ported from
 // Website's CameraRecording.tsx, so the two harness flows record identically).
 //
-// The check NEVER gates the record button. Website's version did - it hid recording
-// behind a 3s countdown that only started once the detector agreed - and that is the one
-// behaviour deliberately not carried over: see the repo's fail-open rule.
+// The check gates the LEAD-IN only, never the record button and never a recording in
+// progress, per the repo's fail-open rule.
 import { useCallback, useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
 import MotorTrackingGraphic from "./MotorTrackingGraphic";
@@ -30,6 +29,9 @@ import {
 	GO_MESSAGE,
 	HUD_UPDATE_EVERY_N_TICKS,
 	LEAD_IN_COUNTDOWN_FROM,
+	LEAD_IN_MONITOR_INTERVAL_MS,
+	LEAD_IN_POSTURE_GRACE_MS,
+	LEAD_IN_RESUME_HOLD_MS,
 	RUN_CHECKS_WHILE_RECORDING,
 } from "./motorConfig";
 
@@ -40,7 +42,7 @@ interface VideoDimensions {
 	left: number;
 }
 
-type RecordingPhase = "idle" | "leadIn" | "go" | "active";
+type RecordingPhase = "idle" | "waiting" | "leadIn" | "go" | "active";
 
 interface Props {
 	test: MotorTest;
@@ -99,6 +101,9 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 
 	const [recordingPhase, setRecordingPhase] = useState<RecordingPhase>("idle");
 	const [countdown, setCountdown] = useState(-1);
+	const [leadInInterrupted, setLeadInInterrupted] = useState(false);
+	const postureBadSinceRef = useRef<number | null>(null);
+	const postureGoodSinceRef = useRef<number | null>(null);
 	const [phaseMessage, setPhaseMessage] = useState<string | null>(null);
 	const [recordingTime, setRecordingTime] = useState(0);
 	const [showBlinkingCircle, setShowBlinkingCircle] = useState(false);
@@ -117,6 +122,11 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 	useEffect(() => {
 		handModelRef.current = handModel;
 	}, [handModel]);
+
+	const checkAvailableRef = useRef(handModel.status === "ready");
+	useEffect(() => {
+		checkAvailableRef.current = handModel.status === "ready";
+	}, [handModel.status]);
 
 	const onRecordedRef = useRef(onRecorded);
 	useEffect(() => {
@@ -280,6 +290,10 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 							tickHz: tickHzRef.current,
 						});
 
+						const poseGood = frameEvaluation.code === "HANDS_READY";
+						postureBadSinceRef.current = poseGood ? null : postureBadSinceRef.current ?? now;
+						postureGoodSinceRef.current = poseGood ? postureGoodSinceRef.current ?? now : null;
+
 						tickRef.current += 1;
 						if (tickRef.current % HUD_UPDATE_EVERY_N_TICKS === 0) {
 							setEvaluation(frameEvaluation);
@@ -333,37 +347,6 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 		phaseTimersRef.current = [];
 	}, []);
 
-	const startGuidedSequence = useCallback(() => {
-		clearPhaseTimers();
-		stopTimer();
-
-		let countdownValue = LEAD_IN_COUNTDOWN_FROM;
-		setRecordingPhase("leadIn");
-		setPhaseMessage(null);
-		setCountdown(countdownValue);
-
-		const countdownIntervalId = setInterval(() => {
-			if (countdownValue > 1) {
-				countdownValue -= 1;
-				setCountdown(countdownValue);
-				return;
-			}
-			clearInterval(countdownIntervalId);
-			setCountdown(-1);
-			setRecordingPhase("go");
-			setPhaseMessage(GO_MESSAGE);
-			startTimer();
-
-			const goTimeout = setTimeout(() => {
-				setPhaseMessage(null);
-				setRecordingPhase("active");
-			}, 1000);
-			phaseTimersRef.current.push(goTimeout);
-		}, 1000);
-
-		phaseTimersRef.current.push(countdownIntervalId);
-	}, [clearPhaseTimers, stopTimer, startTimer]);
-
 	const handleDataAvailable = useCallback(({ data }: BlobEvent) => {
 		if (data.size > 0) recordedChunksRef.current.push(data);
 	}, []);
@@ -380,10 +363,12 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 		onRecordedRef.current(blob, mimeType);
 	}, []);
 
-	const handleStartRecording = useCallback(() => {
-		if (!cameraReady) return;
+	const beginRecording = useCallback(() => {
 		const stream = mediaStreamRef.current;
-		if (!stream || !stream.active || stream.getVideoTracks().length === 0) return;
+		if (!stream || !stream.active || stream.getVideoTracks().length === 0) {
+			setRecordingPhase("idle");
+			return;
+		}
 
 		try {
 			const mimeType = getSupportedMimeType();
@@ -396,13 +381,89 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 			recorder.addEventListener("stop", finishRecording);
 			recorder.start(1000);
 			mediaRecorderRef.current = recorder;
-
-			setIsRecording(true);
-			startGuidedSequence();
 		} catch (error) {
 			console.error("[TestMotorCamera] Failed to start recording:", error);
+			setRecordingPhase("idle");
+			return;
 		}
-	}, [cameraReady, handleDataAvailable, finishRecording, startGuidedSequence]);
+
+		setIsRecording(true);
+		setLeadInInterrupted(false);
+		setRecordingPhase("go");
+		setPhaseMessage(GO_MESSAGE);
+		startTimer();
+
+		const goTimeout = setTimeout(() => {
+			setPhaseMessage(null);
+			setRecordingPhase("active");
+		}, 1000);
+		phaseTimersRef.current.push(goTimeout);
+	}, [handleDataAvailable, finishRecording, startTimer]);
+
+	const startCountdown = useCallback(() => {
+		clearPhaseTimers();
+		stopTimer();
+		postureBadSinceRef.current = null;
+
+		let countdownValue = LEAD_IN_COUNTDOWN_FROM;
+		setRecordingPhase("leadIn");
+		setPhaseMessage(null);
+		setCountdown(countdownValue);
+
+		const countdownIntervalId = setInterval(() => {
+			if (countdownValue > 1) {
+				countdownValue -= 1;
+				setCountdown(countdownValue);
+				return;
+			}
+			clearInterval(countdownIntervalId);
+			setCountdown(-1);
+			beginRecording();
+		}, 1000);
+
+		phaseTimersRef.current.push(countdownIntervalId);
+	}, [clearPhaseTimers, stopTimer, beginRecording]);
+
+	const cancelCountdown = useCallback(() => {
+		clearPhaseTimers();
+		postureGoodSinceRef.current = null;
+		setCountdown(-1);
+		setPhaseMessage(null);
+		setLeadInInterrupted(true);
+		setRecordingPhase("waiting");
+	}, [clearPhaseTimers]);
+
+	// Its own interval rather than a phase timer: startCountdown calls clearPhaseTimers,
+	// which would otherwise kill the monitor driving it.
+	useEffect(() => {
+		if (recordingPhase !== "leadIn" && recordingPhase !== "waiting") return;
+
+		const monitorId = setInterval(() => {
+			const now = performance.now();
+			if (recordingPhase === "leadIn") {
+				const badSince = postureBadSinceRef.current;
+				if (badSince !== null && now - badSince >= LEAD_IN_POSTURE_GRACE_MS) cancelCountdown();
+				return;
+			}
+			// Fail open: with no detector nothing can ever clear the wait.
+			if (!checkAvailableRef.current) {
+				startCountdown();
+				return;
+			}
+			const goodSince = postureGoodSinceRef.current;
+			if (goodSince !== null && now - goodSince >= LEAD_IN_RESUME_HOLD_MS) startCountdown();
+		}, LEAD_IN_MONITOR_INTERVAL_MS);
+
+		return () => clearInterval(monitorId);
+	}, [recordingPhase, cancelCountdown, startCountdown]);
+
+	const handleStartRecording = useCallback(() => {
+		if (!cameraReady) return;
+		const stream = mediaStreamRef.current;
+		if (!stream || !stream.active || stream.getVideoTracks().length === 0) return;
+		setLeadInInterrupted(false);
+		startCountdown();
+	}, [cameraReady, startCountdown]);
 
 	const handleStopRecording = useCallback(() => {
 		clearPhaseTimers();
@@ -410,6 +471,7 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 		setShowBlinkingCircle(false);
 		setPhaseMessage(null);
 		setCountdown(-1);
+		setLeadInInterrupted(false);
 
 		const recorder = mediaRecorderRef.current;
 		if (recorder && recorder.state === "recording") {
@@ -449,8 +511,9 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 	}, [clearPhaseTimers, handleDataAvailable, finishRecording]);
 
 	const checkAvailable = handModel.status === "ready";
+	const isArmed = recordingPhase === "leadIn" || recordingPhase === "waiting";
 	const showSetupUi = !isRecording;
-	const showLeadIn = isRecording && recordingPhase === "leadIn";
+	const showLeadIn = recordingPhase === "leadIn";
 	const showGoCue = isRecording && recordingPhase === "go" && phaseMessage;
 	const showStopwatch = isRecording && (recordingPhase === "go" || recordingPhase === "active");
 	const guideColor = status === "HANDS_READY" ? GUIDE_OK_COLOR : GUIDE_BAD_COLOR;
@@ -513,12 +576,18 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 						Test {testNumber} of {totalTests}: {test.label}
 					</p>
 					<p className="tm-setup-line">{cameraReady ? test.instruction : "Loading camera..."}</p>
+					{leadInInterrupted && (
+						<p className="tm-setup-cue" role="status">
+							Countdown stopped - fix the position below and it will start again
+						</p>
+					)}
 				</div>
 			)}
 
 			{showSetupUi && checkAvailable && (
 				<MotorGuidanceBanner
 					code={status}
+					okMessage={isArmed ? "Hold this position" : undefined}
 					showDebugHud={debugVisible}
 					onToggleDebugHud={() => setShowDebugHud((v) => !v)}
 					hideDebugToggle={patientView}
@@ -561,10 +630,15 @@ function TestMotorCamera({ test, testNumber, totalTests, handModel, statusWindow
 								{(recordingTime % 60).toString().padStart(2, "0")}
 							</div>
 						)}
-						{isRecording ? (
+						{isRecording || isArmed ? (
 							<div className="record-circle">
-								<button type="button" onClick={handleStopRecording} className="stop-button" aria-label="Stop recording" />
-								<span className="tm-record-caption">Press to Stop</span>
+								<button
+									type="button"
+									onClick={handleStopRecording}
+									className="stop-button"
+									aria-label={isRecording ? "Stop recording" : "Cancel countdown"}
+								/>
+								<span className="tm-record-caption">{isRecording ? "Press to Stop" : "Press to Cancel"}</span>
 							</div>
 						) : (
 							<div className="record-circle">
@@ -623,6 +697,7 @@ const CSS = `
 		background: linear-gradient(to bottom, rgba(28, 36, 52, 0.85) 0%, rgba(28, 36, 52, 0.6) 70%, transparent 100%);
 	}
 	.tm-setup-title { margin: 0; color: #fff; font-weight: 700; font-size: 0.95rem; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+	.tm-setup-cue { margin: 0; color: #fde68a; font-size: 0.85rem; font-weight: 700; text-align: center; }
 	.tm-setup-line { margin: 0; color: #fff; font-size: 0.9rem; text-align: center; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
 	.tm-record-layer { position: absolute; inset: 0; z-index: 999; pointer-events: none; }
 	.tm-record-caption {

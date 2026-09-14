@@ -47,9 +47,11 @@ interface Props {
 	/** Patient view: the debug toggle is a harness affordance and must not be one tap away. */
 	hideDebugToggle?: boolean;
 	topOffsetPx?: number;
+	okMessage?: string;
 }
 
-function MotorGuidanceBanner({ code, showDebugHud, onToggleDebugHud, hideDebugToggle = false, topOffsetPx = 0 }: Props) {
+function MotorGuidanceBanner({ code, showDebugHud, onToggleDebugHud, hideDebugToggle = false, topOffsetPx = 0, okMessage }: Props) {
+	const message = code === "HANDS_READY" && okMessage ? okMessage : MESSAGES[code];
 	return (
 		<div
 			className={`mgb-root mgb-${toneFor(code)}`}
@@ -58,7 +60,7 @@ function MotorGuidanceBanner({ code, showDebugHud, onToggleDebugHud, hideDebugTo
 			style={{ top: `calc(env(safe-area-inset-top, 0px) + ${topOffsetPx}px)` }}
 		>
 			<style>{CSS}</style>
-			<span className="mgb-message">{MESSAGES[code]}</span>
+			<span className="mgb-message">{message}</span>
 			{!hideDebugToggle && (
 				<button type="button" className="mgb-toggle" onClick={onToggleDebugHud} aria-pressed={showDebugHud}>
 					{showDebugHud ? "Hide debug" : "Show debug"}
